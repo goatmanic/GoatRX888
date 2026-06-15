@@ -187,351 +187,299 @@ http://www.steila.com/blog
 
 ---
 
-# RX888 mkII / SoapySDR stability, tuning, gain, and VHF AGC changes
+# RX888 mkII SoapySDR branch notes
 
-This fork contains additional work on the RX888 mkII / SDDC SoapySDR driver, focused on making the device usable and stable through SoapyRemote and Gqrx.
+This branch adds a set of Linux/SoapySDR improvements for RX888 mkII use through SoapyRemote and Gqrx. The main goal is to make streaming, tuning, gain control, and VHF AGC reliable during interactive remote operation.
 
-The changes were developed against an RX888 mkII connected to a Linux host and accessed remotely from Gqrx through SoapyRemote.
+The work was validated on an RX888 mkII with SoapySDR ABI 0.8 and the `libSDDCSupport.so` module.
 
-Tested setup:
+## Recommended device strings
 
-- Device: RX888 mkII / SDDC
-- Server host: `steel`
-- Client host: `Kupferpforte`
-- SoapySDR ABI: 0.8
-- Soapy module: `libSDDCSupport.so`
-- SoapyRemote port: `55132`
+Local SoapySDR:
 
-Useful device strings:
+```text
+driver=SDDC,soapy=0
+```
 
-- Local Soapy:
+Remote SoapySDRUtil:
 
-      driver=SDDC,soapy=0
+```text
+driver=remote,remote=tcp://192.168.50.1:55132,remote:driver=SDDC
+```
 
-- Remote SoapySDRUtil:
+Gqrx / gr-osmosdr over SoapyRemote TCP:
 
-      driver=remote,remote=tcp://192.168.50.1:55132,remote:driver=SDDC
+```text
+soapy=0,driver=remote,remote=tcp://192.168.50.1:55132,remote:driver=SDDC,remote:prot=tcp,remote:priority=0
+```
 
-- Gqrx / gr-osmosdr:
-
-      soapy=0,driver=remote,remote=tcp://192.168.50.1:55132,remote:driver=SDDC,remote:prot=tcp,remote:priority=0
-
-## Summary of changes
+## Summary
 
 This branch improves:
 
 - SoapySDR stream lifecycle safety.
-- Buffer locking and stream-active state handling.
-- Async libusb transfer shutdown/restart behavior.
-- Live RF/IF gain changes while streaming.
-- Correct HF/VHF mode switching.
-- Fast same-mode frequency tuning.
-- VHF RF/IF gain persistence across tuner reinitialization.
+- Buffer ownership and callback synchronization.
+- Async libusb start/stop/cancel behavior.
+- Live RF and IF gain changes while streaming.
+- Correct HF/VHF mode switching before LO tuning.
+- Fast same-mode frequency tuning without stream restarts.
+- VHF gain persistence across R828D tuner reinitialization.
 - Real VHF/R828D hardware AGC through Soapy `setGainMode()`.
 - Gqrx hardware AGC checkbox behavior on VHF.
-- General stability when used over SoapyRemote.
+- Overall SoapyRemote stability.
 
-Main files touched:
+Changed files:
 
-      Core/FX3Class.h
-      Core/arch/linux/FX3handler.h
-      Core/arch/linux/FX3handler.cpp
-      Core/arch/linux/streaming.c
-      Core/radio/RX888R2Radio.cpp
-      SoapySDDC/SoapySDDC.hpp
-      SoapySDDC/Settings.cpp
-      SoapySDDC/Streaming.cpp
+```text
+Core/FX3Class.h
+Core/arch/linux/FX3handler.h
+Core/arch/linux/FX3handler.cpp
+Core/arch/linux/streaming.c
+Core/radio/RX888R2Radio.cpp
+SoapySDDC/SoapySDDC.hpp
+SoapySDDC/Settings.cpp
+SoapySDDC/Streaming.cpp
+```
 
-## 1. Stream lifecycle and buffer ownership
+## Stream lifecycle and buffer safety
 
-The original Soapy streaming path could race stream activation, stream shutdown, callback writes, and buffer reads. This was especially visible when Gqrx was used through SoapyRemote.
+The Soapy streaming path now serializes stream start, stream stop, stream close, and stream reads with a dedicated stream mutex and an explicit active-stream flag:
 
-Typical secondary failures included:
+```cpp
+std::mutex _stream_mutex;
+std::atomic<bool> _streamActive{false};
+```
 
-      SoapyRPCPacker::send() FAIL: send() [32: Broken pipe]
-      SoapyLogAcceptor::accept() FAIL
-      SoapyRPCUnpacker::recv(header) FAIL
-
-These were usually symptoms of the server-side device process closing or crashing, not the root cause.
-
-The driver now has explicit stream state and locking:
-
-      std::mutex _stream_mutex;
-      std::atomic<bool> _streamActive{false};
-
-The following paths are serialized with `_stream_mutex`:
+The following operations are protected by `_stream_mutex`:
 
 - `closeStream`
 - `activateStream`
 - `deactivateStream`
 - `readStream`
 
-Stream start/stop is guarded by `_streamActive`, preventing duplicate starts and duplicate stops from racing.
+Activation and deactivation reset transient buffer state, including the current buffer pointer, buffered element count, read indices, overflow state, and reset flags. The read-buffer path now waits on a predicate that includes stream state so readers do not block forever after shutdown.
 
-On stream activation/deactivation, transient read state is reset:
+The streaming callback now checks `_streamActive`, locks the buffer mutex before publishing sample data, updates head/tail/count state under lock, and only then notifies waiting readers.
 
-- `bufferedElems`
-- `_currentBuff`
-- `resetBuffer`
-- buffer head/tail/count
-- overflow state
+This prevents races between the USB callback, Soapy read calls, and stream teardown. It also reduces secondary SoapyRemote failures such as broken pipe errors caused by a device-side crash or unexpected close.
 
-The read-buffer path now locks `_buf_mutex` around full buffer acquisition. The wait predicate includes stream state so a reader cannot wait forever after stream shutdown.
+## Async libusb transfer safety
 
-The callback now checks `_streamActive`, locks `_buf_mutex`, publishes buffer state under lock, and notifies waiting readers after new data is available.
-
-## 2. Async libusb streaming safety
-
-The lower-level async streaming implementation in `Core/arch/linux/streaming.c` was hardened.
+`Core/arch/linux/streaming.c` was hardened around async transfer lifecycle management.
 
 The patch adds:
 
-- atomic stream status helpers
+- atomic status helpers
 - `pthread_mutex_t transfer_mutex`
 - serialized transfer submission and cancellation
 - safer active-transfer accounting
-- cancellation-before-drain behavior on stop
-- callback-side checks before transfer resubmission
-- cancellation of outstanding transfers on fatal callback errors
+- cancellation-before-drain behavior during stop
+- callback-side status checks before resubmission
+- cancellation of all active transfers after fatal callback errors
 
-The goal is to avoid races between:
+This addresses races between `streaming_start`, `streaming_stop`, libusb callback resubmission, transfer cancellation, and active transfer accounting.
 
-- `streaming_start`
-- `streaming_stop`
-- callback resubmission
-- libusb cancellation
-- transfer completion
-- active transfer count changes
+## Live gain while streaming
 
-This makes rapid open/close/restart behavior from Gqrx and SoapyRemote much more robust.
+Gain control now uses a separate control mutex:
 
-## 3. Live gain while streaming
+```cpp
+std::mutex _control_mutex;
+```
 
-The original gain path could call USB control operations while streaming was active without sufficient coordination. A conservative intermediate fix stopped and restarted streaming around gain writes, but that made Gqrx gain changes slow and disruptive.
+`SoapySDDC::setGain()` no longer stops or restarts the stream. Instead it clamps the requested value, selects the nearest supported hardware step, caches the selected step for the current RF mode, and writes the corresponding RF or IF gain while streaming continues.
 
-The current branch adds:
+HF RF gain is exposed as a positive public range even though the hardware table is an attenuator table. Public HF RF gain is now:
 
-      std::mutex _control_mutex;
+```text
+0.0 ... 31.5 dB
+```
 
-`SoapySDDC::setGain()` now:
+For HF RF:
 
-- locks `_control_mutex`
-- does not stop streaming
-- does not restart streaming
-- does not reset sample buffers
-- clamps requested gain to legal hardware ranges
-- selects the nearest hardware-supported step
-- writes only the relevant RF or IF hardware gain
+- `0.0` means maximum attenuation.
+- `31.5` means minimum attenuation / maximum RF level.
 
-This makes RF/IF gain changes live.
+VHF RF remains native:
 
-## 4. HF RF gain remapping
-
-On RX888 mkII, HF RF gain is actually an attenuator table. Internally the HF RF table is negative:
-
-      -31.5 dB ... 0 dB
-
-The public Soapy HF RF range is now exposed as:
-
-      0 ... 31.5 dB
-
-Mapping:
-
-- public `0` means maximum attenuation
-- public `31.5` means minimum attenuation / maximum RF level
-
-This avoids the confusing inverted behavior where lowering the slider could increase apparent level or vice versa.
-
-VHF RF is not remapped, because the R828D VHF RF table is already positive and increasing:
-
-      0.0 ... 49.6 dB
+```text
+0.0 ... 49.6 dB
+```
 
 VHF IF remains native:
 
-      -4.7 ... 40.8 dB
+```text
+-4.7 ... 40.8 dB
+```
 
-## 5. Correct HF/VHF frequency transition
+## Frequency tuning and HF/VHF transitions
 
-The old frequency path only called:
+The old Soapy frequency path called `TuneLO()` directly. On RX888 mkII that is not sufficient because VHF tuning only works correctly after the hardware has been switched into VHF mode.
 
-      centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+The new path first asks the radio which RF mode is needed:
 
-That is not sufficient on RX888 mkII. VHF tuning only works correctly after the hardware has been placed into VHF mode.
+```cpp
+rf_mode wantedMode = RadioHandler.PrepareLo((uint64_t)frequency);
+```
 
-The fixed frequency path now asks the radio which mode is required:
+If the requested frequency stays in the current RF mode, the driver uses a fast path and only retunes the LO. The stream remains active.
 
-      rf_mode wantedMode = RadioHandler.PrepareLo((uint64_t)frequency);
+If the requested frequency crosses the HF/VHF boundary, the driver uses a safe slow path:
 
-If the requested frequency remains in the current RF mode, the driver uses a fast path and only tunes the LO. Streaming continues uninterrupted.
+1. lock stream state
+2. stop streaming if active
+3. clear buffered sample state
+4. switch RF mode with `UpdatemodeRF(wantedMode)`
+5. tune LO with `TuneLO(frequency)`
+6. reapply cached gain or VHF AGC state
+7. restart streaming if it had been active
 
-If the requested frequency crosses the HF/VHF boundary, the driver uses a safe path:
+This makes same-mode tuning live while keeping HF/VHF boundary crossings safe.
 
-- lock stream state
-- stop streaming if active
-- clear buffers
-- switch RF mode with `UpdatemodeRF(wantedMode)`
-- tune LO with `TuneLO(frequency)`
-- reapply gain or AGC state
-- restart streaming if it was active
+## VHF gain cache and reapply
 
-This means:
+The RX888 mkII VHF path uses the R828D tuner. Entering VHF mode initializes the tuner, and tuner initialization resets R828D state. Without a driver-side cache, Gqrx could still show the previous VHF gain while the hardware had already been reset.
 
-- HF to HF tuning is live
-- VHF to VHF tuning is live
-- HF to VHF or VHF to HF crossing is safe
+The driver now caches gain steps per RF mode:
 
-Validation showed stable streaming while tuning inside both HF and VHF modes.
+```cpp
+int _hfRfGainStep{-1};
+int _hfIfGainStep{-1};
+int _vhfRfGainStep{-1};
+int _vhfIfGainStep{-1};
+```
 
-## 6. VHF gain cache and reapply
+On HF/VHF transitions, VHF gain is reapplied after both tuner initialization and tuner tuning:
 
-VHF RF/IF gain could appear flaky after switching between HF and VHF.
+```text
+TUNERINIT
+TUNERTUNE
+reapply cached VHF RF/IF gain
+```
 
-The reason is that VHF mode uses the R828D tuner. Entering VHF mode initializes the tuner, and tuner initialization resets R828D state. Gqrx could still show the old gain slider value while the hardware had been reset underneath it.
+The order matters because tuner tune operations may touch R82xx register state.
 
-The driver now caches the selected gain step per mode:
+## VHF/R828D hardware AGC
 
-      int _hfRfGainStep{-1};
-      int _hfIfGainStep{-1};
-      int _vhfRfGainStep{-1};
-      int _vhfIfGainStep{-1};
+The upstream Soapy driver did not expose hardware AGC: `hasGainMode()` returned false and the gain-mode methods were commented out.
 
-`setGain()` records the selected RF/IF step for the current mode.
+This branch implements real VHF/R828D gain mode support:
 
-After a VHF tuner reinitialization, the driver reapplies cached gain after both tuner init and tuner tune:
+```cpp
+bool hasGainMode(...) const;
+void setGainMode(..., bool automatic);
+bool getGainMode(...) const;
+```
 
-      TUNERINIT
-      TUNERTUNE
-      reapply VHF RF/IF gain
+AGC state is stored in:
 
-This ordering is important because tuner tuning may touch R82xx register state.
+```cpp
+bool _vhfAgcMode{false};
+```
 
-Validation output showed the cached VHF gain being restored after returning from HF to VHF:
+Manual R828D RF gain uses the existing firmware `R82XX_ATTENUATOR` path, which forces manual LNA/mixer gain. To enable AGC without rebuilding FX3 firmware, this branch adds a host-side raw I2C helper:
 
-      UpdateattRF VHF index 28 value 49.6 dB
-      UpdateGainIF VHF index 9 value 19.5 dB
+```cpp
+virtual bool I2CWrite(uint8_t reg, uint16_t addr, const uint8_t *data, uint16_t len);
+```
 
-## 7. Real VHF/R828D hardware AGC
-
-The upstream Soapy driver reported no hardware AGC support:
-
-      hasGainMode() == false
-
-The gain-mode methods were commented out, so Gqrx’s hardware AGC checkbox did not map to a clear driver-side hardware AGC operation.
-
-This branch implements VHF hardware AGC for the R828D tuner.
-
-The R828D AGC-related register behavior used here is:
-
-- R5 bit 4:
-  - `0` = LNA auto
-  - `1` = LNA manual
-- R7 bit 4:
-  - `1` = mixer auto
-  - `0` = mixer manual
-
-Manual RF gain uses the firmware `R82XX_ATTENUATOR` path, which forces manual LNA/mixer gain. Therefore the existing manual RF-gain command could not be used to enable AGC.
-
-To avoid rebuilding FX3 firmware, a host-side raw I2C helper was added:
-
-      virtual bool I2CWrite(uint8_t reg, uint16_t addr, const uint8_t *data, uint16_t len);
-
-The Linux implementation uses the existing firmware `I2CWFX3` vendor command.
-
-The Soapy driver now implements:
-
-      bool hasGainMode(...) const;
-      void setGainMode(..., bool automatic);
-      bool getGainMode(...) const;
-
-New VHF AGC state:
-
-      bool _vhfAgcMode{false};
+The Linux implementation sends the existing firmware `I2CWFX3` vendor command.
 
 When VHF AGC is enabled, the driver writes:
 
-      R828D R5 = 0x80
-      R828D R7 = 0x70
+```text
+R828D R5 = 0x80
+R828D R7 = 0x70
+```
+
+This selects R828D LNA auto gain and mixer auto gain.
 
 Expected log:
 
-      setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
+```text
+setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
+```
 
 When VHF AGC is disabled, the driver restores cached manual VHF RF/IF gain:
 
-      setGainMode VHF AGC OFF: restoring manual cached VHF RF/IF gain
+```text
+setGainMode VHF AGC OFF: restoring manual cached VHF RF/IF gain
+```
 
 Manual RF gain requests while VHF AGC is enabled are cached but do not force the tuner back into manual RF mode:
 
-      VHF AGC ON: cached requested RF gain step 28, not writing manual RF gain
+```text
+VHF AGC ON: cached requested RF gain step 28, not writing manual RF gain
+```
 
-AGC is also reapplied after HF to VHF transitions, after tuner init/tune.
+AGC is also reapplied after HF-to-VHF transitions, after tuner init/tune.
 
-Validation output:
+Validated behavior:
 
-      enter VHF
-      has gain mode: True
-      initial gain mode: False
-      AGC ON
-      setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
-      gain mode: True
-      try RF gain while AGC ON
-      VHF AGC ON: cached requested RF gain step 28, not writing manual RF gain
-      AGC OFF
-      setGainMode VHF AGC OFF: restoring manual cached VHF RF/IF gain
-      UpdateattRF VHF index 28 value 49.6 dB
-      gain mode: False
-      AGC ON again
-      setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
-      go HF
-      back VHF
-      setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
-      done
+```text
+enter VHF
+has gain mode: True
+initial gain mode: False
+AGC ON
+setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
+gain mode: True
+try RF gain while AGC ON
+VHF AGC ON: cached requested RF gain step 28, not writing manual RF gain
+AGC OFF
+setGainMode VHF AGC OFF: restoring manual cached VHF RF/IF gain
+UpdateattRF VHF index 28 value 49.6 dB
+gain mode: False
+AGC ON again
+setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
+go HF
+back VHF
+setGainMode VHF AGC ON: R828D R5=0x80 R7=0x70 ok=1/1
+done
+```
 
-This confirms that VHF hardware AGC is actually written to the R828D and survives HF/VHF mode transitions.
+## AGC limitation
 
-## 8. AGC limitation
+AGC support in this branch is VHF/R828D-only. HF hardware AGC is not implemented. If `setGainMode(true)` is called while in HF mode, the driver logs that HF hardware AGC is not implemented and leaves hardware gain unchanged.
 
-AGC support in this branch is VHF/R828D-only.
-
-HF hardware AGC is not implemented. If `setGainMode(true)` is called while in HF mode, the driver logs that HF hardware AGC is not implemented and leaves hardware gain unchanged.
-
-## 9. SoapyRemote and bandwidth notes
+## SoapyRemote bandwidth notes
 
 RX888/SDDC stream format:
 
-      CF32
-      8 bytes/sample
+```text
+CF32
+8 bytes/sample
+```
 
 Approximate raw payload bandwidth:
 
-      2 MSps  -> 128 Mbit/s
-      4 MSps  -> 256 Mbit/s
-      5 MSps  -> 320 Mbit/s
-      8 MSps  -> 512 Mbit/s
+```text
+2 MSps  -> 128 Mbit/s
+4 MSps  -> 256 Mbit/s
+5 MSps  -> 320 Mbit/s
+8 MSps  -> 512 Mbit/s
+```
 
-Actual Wi-Fi requirements are higher due to overhead, retransmits, and scheduling. For 5 MSps over Wi-Fi, sustained directional throughput around 450 to 600 Mbit/s is a more realistic minimum, with 700+ Mbit/s preferred.
+Actual Wi-Fi requirements are higher because of protocol overhead, retransmits, and scheduling. For 5 MSps over Wi-Fi, sustained directional throughput around 450 to 600 Mbit/s is a more realistic minimum, with 700+ Mbit/s preferred.
 
 Recommended server command:
 
-      SoapySDRServer --bind="0.0.0.0"
+```bash
+SoapySDRServer --bind="0.0.0.0"
+```
 
-Recommended Gqrx string:
+Recommended directional iperf3 test from the client to the server, measuring server-to-client throughput:
 
-      soapy=0,driver=remote,remote=tcp://192.168.50.1:55132,remote:driver=SDDC,remote:prot=tcp,remote:priority=0
+```bash
+iperf3 -s
+iperf3 -c 192.168.50.1 -R -t 30 -P 4
+```
 
-Recommended directional iperf3 test from client to server:
+## Future cleanup before upstreaming
 
-      iperf3 -s
-      iperf3 -c 192.168.50.1 -R -t 30 -P 4
+Possible cleanup before proposing this upstream:
 
-## 10. Known future work
-
-Possible cleanup before upstreaming:
-
-- Split this branch into smaller reviewable commits.
+- Split the work into smaller reviewable commits.
 - Convert temporary stderr debug logging to `SoapySDR_logf()` or remove it.
-- Add a cleaner firmware-side command for R82xx AGC instead of host-side raw I2C writes.
+- Add a firmware-side R82xx AGC command instead of using host-side raw I2C writes.
 - Characterize the VHF RF gain table electrically with a known signal source.
-- Consider exposing VHF AGC only when the radio is actually in VHF mode, if the consuming application supports mode-dependent gain capability.
-- Keep HF gain mode as unsupported unless a real HF hardware AGC path is implemented.
-
+- Keep HF gain mode unsupported unless a real HF hardware AGC path is implemented.
