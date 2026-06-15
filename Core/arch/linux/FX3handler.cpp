@@ -70,6 +70,18 @@ bool fx3handler::SetArgument(uint16_t index, uint16_t value)
     return usb_device_control(this->dev, SETARGFX3, value, index, (uint8_t *)&data, sizeof(data), 0) == 0;
 }
 
+bool fx3handler::I2CWrite(uint8_t reg, uint16_t addr, const uint8_t *data, uint16_t len)
+{
+    uint8_t tmp[64];
+
+    if (len > sizeof(tmp))
+        return false;
+
+    memcpy(tmp, data, len);
+
+    return usb_device_control(this->dev, I2CWFX3, addr, reg, tmp, len, 0) == 0;
+}
+
 bool fx3handler::GetHardwareInfo(uint32_t *data)
 {
     return usb_device_control(this->dev, TESTFX3, 0, 0, (uint8_t *)data, sizeof(*data), 1) == 0;

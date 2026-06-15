@@ -3,6 +3,7 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Types.h>
 #include <atomic>
+#include <mutex>
 #include <cstddef>
 #include <sys/types.h>
 #include "FX3Class.h"
@@ -75,9 +76,9 @@ public:
 
     bool hasGainMode(const int direction, const size_t channel) const;
 
-    // void setGainMode(const int direction, const size_t channel, const bool automatic);
+    void setGainMode(const int direction, const size_t channel, const bool automatic);
 
-    // bool getGainMode(const int direction, const size_t channel) const;
+    bool getGainMode(const int direction, const size_t channel) const;
 
     // void setGain(const int direction, const size_t channel, const double value);
 
@@ -138,6 +139,7 @@ private:
 
     fx3class *Fx3;
     RadioHandlerClass RadioHandler;
+    bool setVhfAgcUnlocked(bool automatic);
 
     // Helper to check if device supports high ADC frequencies
     bool supportsHighADCFrequency() const;
@@ -163,6 +165,15 @@ public:
     size_t bufferedElems;
     size_t _currentHandle;
     bool resetBuffer;
+
+    std::mutex _stream_mutex;
+    std::mutex _control_mutex;
+    int _hfRfGainStep{-1};
+    int _hfIfGainStep{-1};
+    int _vhfRfGainStep{-1};
+    int _vhfIfGainStep{-1};
+    bool _vhfAgcMode{false};
+    std::atomic<bool> _streamActive{false};
 
     int samplerateidx;
 

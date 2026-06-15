@@ -22,6 +22,7 @@ public:
 	bool Control(FX3Command command, uint32_t data) override;
 	bool Control(FX3Command command, uint64_t data) override;
 	bool SetArgument(uint16_t index, uint16_t value) override;
+	bool I2CWrite(uint8_t reg, uint16_t addr, const uint8_t *data, uint16_t len) override;
 	bool GetHardwareInfo(uint32_t* data) override;
 	bool ReadDebugTrace(uint8_t* pdata, uint8_t len) override;
 	void StartStream(ringbuffer<int16_t>& input, int numofblock) override;
