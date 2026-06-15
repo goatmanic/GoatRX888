@@ -25,6 +25,14 @@ public:
 	virtual bool Control(FX3Command command, uint32_t data) = 0;
 	virtual bool Control(FX3Command command, uint64_t data) = 0;
 	virtual bool SetArgument(uint16_t index, uint16_t value) = 0;
+    virtual bool I2CWrite(uint8_t reg, uint16_t addr, const uint8_t *data, uint16_t len)
+    {
+        (void)reg;
+        (void)addr;
+        (void)data;
+        (void)len;
+        return false;
+    }
 	virtual bool GetHardwareInfo(uint32_t* data) = 0;
 	virtual bool ReadDebugTrace(uint8_t* pdata, uint8_t len) = 0;
 	virtual void StartStream(ringbuffer<int16_t>& input, int numofblock) = 0;

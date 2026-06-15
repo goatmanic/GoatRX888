@@ -1,4 +1,5 @@
 #include "../RadioHandler.h"
+#include <cstdio>
 
 #define R828D_FREQ (16000000) // R820T reference frequency
 #define R828D_IF_CARRIER (4570000)
@@ -106,7 +107,7 @@ bool RX888R2Radio::UpdateattRF(int att)
     else
     {
         uint16_t index = att;
-        // this is in VHF mode
+        fprintf(stderr, "UpdateattRF VHF index %u value %.1f dB\n", index, this->vhf_rf_steps[index]);
         return Fx3->SetArgument(R82XX_ATTENUATOR, index);
     }
 }
@@ -172,7 +173,7 @@ bool RX888R2Radio::UpdateGainIF(int gain_index)
     }
     else
     {
-        // this is in VHF mode
+        fprintf(stderr, "UpdateGainIF VHF index %d value %.1f dB\n", gain_index, this->vhf_if_steps[gain_index]);
         return Fx3->SetArgument(R82XX_VGA, (uint16_t)gain_index);
     }
 }

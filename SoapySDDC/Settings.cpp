@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <sys/types.h>
 #include <cstring>
+#include <cstdio>
+#include <algorithm>
+#include <cmath>
 
 static void _Callback(void *context, const float *data, uint32_t len)
 {
@@ -15,21 +18,28 @@ static void _Callback(void *context, const float *data, uint32_t len)
 int SoapySDDC::Callback(void *context, const float *data, uint32_t len)
 {
     // DbgPrintf("SoapySDDC::Callback %d\n", len);
-    if (_buf_count == numBuffers)
+
+    if (!_streamActive.load())
     {
-        _overflowEvent = true;
         return 0;
     }
 
-    auto &buff = _buffs[_buf_tail];
-    buff.resize(len * bytesPerSample);
-    memcpy(buff.data(), data, len * bytesPerSample);
-    _buf_tail = (_buf_tail + 1) % numBuffers;
-
     {
         std::lock_guard<std::mutex> lock(_buf_mutex);
+
+        if (_buf_count == numBuffers)
+        {
+            _overflowEvent = true;
+            return 0;
+        }
+
+        auto &buff = _buffs[_buf_tail];
+        buff.resize(len * bytesPerSample);
+        memcpy(buff.data(), data, len * bytesPerSample);
+        _buf_tail = (_buf_tail + 1) % numBuffers;
         _buf_count++;
     }
+
     _buf_cond.notify_one();
 
     return 0;
@@ -139,13 +149,40 @@ void SoapySDDC::setAntenna(const int direction, const size_t, const std::string 
     {
         return;
     }
+
+    std::lock_guard<std::mutex> lock(_stream_mutex);
+
+    const bool restart = _streamActive.exchange(false);
+    if (restart)
+    {
+        RadioHandler.Stop();
+
+        resetBuffer = true;
+        bufferedElems = 0;
+        _currentBuff = nullptr;
+
+        {
+            std::lock_guard<std::mutex> bufLock(_buf_mutex);
+            _buf_count = 0;
+            _buf_head = 0;
+            _buf_tail = 0;
+            _overflowEvent = false;
+        }
+    }
+
     if (name == "HF")
     {
         RadioHandler.UpdatemodeRF(HFMODE);
+
+        if (_hfRfGainStep >= 0) RadioHandler.UpdateattRF(_hfRfGainStep);
+        if (_hfIfGainStep >= 0) RadioHandler.UpdateIFGain(_hfIfGainStep);
     }
     else if (name == "VHF")
     {
         RadioHandler.UpdatemodeRF(VHFMODE);
+
+        if (_vhfRfGainStep >= 0) RadioHandler.UpdateattRF(_vhfRfGainStep);
+        if (_vhfIfGainStep >= 0) RadioHandler.UpdateIFGain(_vhfIfGainStep);
     }
     else
     {
@@ -153,8 +190,16 @@ void SoapySDDC::setAntenna(const int direction, const size_t, const std::string 
         RadioHandler.UpdBiasT_VHF(false);
     }
 
-    // what antenna is set print in dbgprintf
     DbgPrintf("SoapySDDC::setAntenna : %s\n", name.c_str());
+
+    if (restart)
+    {
+        resetBuffer = true;
+        bufferedElems = 0;
+        _currentBuff = nullptr;
+        _streamActive.store(true);
+        RadioHandler.Start(samplerateidx);
+    }
 }
 
 // get the selected antenna
@@ -206,8 +251,73 @@ std::vector<std::string> SoapySDDC::listGains(const int, const size_t) const
 
 bool SoapySDDC::hasGainMode(const int, const size_t) const
 {
-    DbgPrintf("SoapySDDC::hasGainMode\n");
-    return false;
+    /*
+     * Expose a real gain-mode switch for VHF/R828D.
+     * HF currently has no equivalent hardware AGC path in this driver.
+     */
+    return true;
+}
+
+bool SoapySDDC::setVhfAgcUnlocked(bool automatic)
+{
+    /*
+     * R828D AGC mode:
+     *
+     * R5 bit 4: LNA gain mode. 0 = auto, 1 = manual.
+     * R7 bit 4: mixer gain mode. 1 = auto, 0 = manual.
+     *
+     * We use raw firmware I2CWFX3 writes because the existing
+     * R82XX_ATTENUATOR firmware command always forces manual gain.
+     */
+    if (!automatic)
+        return true;
+
+    static constexpr uint16_t R828D_I2C_ADDR_HOST = 0x74;
+
+    const uint8_t r5_lna_auto = 0x80;
+    const uint8_t r7_mixer_auto = 0x70;
+
+    const bool ok5 = Fx3->I2CWrite(0x05, R828D_I2C_ADDR_HOST, &r5_lna_auto, 1);
+    const bool ok7 = Fx3->I2CWrite(0x07, R828D_I2C_ADDR_HOST, &r7_mixer_auto, 1);
+
+    fprintf(stderr,
+            "setGainMode VHF AGC ON: R828D R5=0x%02x R7=0x%02x ok=%d/%d\n",
+            r5_lna_auto, r7_mixer_auto, ok5 ? 1 : 0, ok7 ? 1 : 0);
+
+    return ok5 && ok7;
+}
+
+void SoapySDDC::setGainMode(const int, const size_t, const bool automatic)
+{
+    std::lock_guard<std::mutex> controlLock(_control_mutex);
+
+    const rf_mode mode = RadioHandler.GetmodeRF();
+
+    if (mode != VHFMODE)
+    {
+        fprintf(stderr,
+                "setGainMode %s requested while not in VHF; HF hardware AGC is not implemented here\n",
+                automatic ? "ON" : "OFF");
+        return;
+    }
+
+    _vhfAgcMode = automatic;
+
+    if (_vhfAgcMode)
+    {
+        setVhfAgcUnlocked(true);
+        return;
+    }
+
+    fprintf(stderr, "setGainMode VHF AGC OFF: restoring manual cached VHF RF/IF gain\n");
+
+    if (_vhfRfGainStep >= 0) RadioHandler.UpdateattRF(_vhfRfGainStep);
+    if (_vhfIfGainStep >= 0) RadioHandler.UpdateIFGain(_vhfIfGainStep);
+}
+
+bool SoapySDDC::getGainMode(const int, const size_t) const
+{
+    return _vhfAgcMode;
 }
 
 // void SoapySDDC::setGainMode(const int, const size_t, const bool)
@@ -219,31 +329,84 @@ bool SoapySDDC::hasGainMode(const int, const size_t) const
 void SoapySDDC::setGain(const int, const size_t, const std::string &name, const double value)
 {
     DbgPrintf("SoapySDDC::setGain %s = %f\n", name.c_str(), value);
-    const float *steps;
-    int len = RadioHandler.GetRFAttSteps(&steps);
-    int step = len - 1;
+
+    std::lock_guard<std::mutex> controlLock(_control_mutex);
+
+    const float *steps = nullptr;
+    int len = 0;
 
     if (name == "RF") {
         len = RadioHandler.GetRFAttSteps(&steps);
     }
     else if (name == "IF") {
         len = RadioHandler.GetIFGainSteps(&steps);
-    } else
-        return; // unknown name
+    }
+    else {
+        return;
+    }
 
-    for (int i = 1; i < len; i++) {
-        if (steps[i - 1] <= value && steps[i] > value)
+    if (len <= 0 || steps == nullptr) {
+        return;
+    }
+
+    const bool hfRfAttenuator =
+        (name == "RF" && len > 1 && steps[0] < 0.0f && steps[len - 1] <= 0.0f);
+
+    double target = value;
+
+    if (hfRfAttenuator)
+    {
+        const double publicMin = 0.0;
+        const double publicMax = double(steps[len - 1] - steps[0]);
+
+        if (target < publicMin) target = publicMin;
+        if (target > publicMax) target = publicMax;
+
+        target = double(steps[0]) + target;
+    }
+    else
+    {
+        const double lo = std::min(double(steps[0]), double(steps[len - 1]));
+        const double hi = std::max(double(steps[0]), double(steps[len - 1]));
+
+        if (target < lo) target = lo;
+        if (target > hi) target = hi;
+    }
+
+    int step = 0;
+    double bestDist = std::abs(double(steps[0]) - target);
+
+    for (int i = 1; i < len; i++)
+    {
+        const double dist = std::abs(double(steps[i]) - target);
+        if (dist < bestDist)
         {
-            step = i - 1;
-            break;
+            bestDist = dist;
+            step = i;
         }
     }
 
+    const rf_mode mode = RadioHandler.GetmodeRF();
+
     if (name == "RF") {
-        len = RadioHandler.UpdateattRF(step);
+        if (mode == VHFMODE) _vhfRfGainStep = step;
+        else if (mode == HFMODE) _hfRfGainStep = step;
+
+        if (mode == VHFMODE && _vhfAgcMode)
+        {
+            fprintf(stderr,
+                    "VHF AGC ON: cached requested RF gain step %d, not writing manual RF gain\n",
+                    step);
+            return;
+        }
+
+        RadioHandler.UpdateattRF(step);
     }
     else if (name == "IF") {
-        len = RadioHandler.UpdateIFGain(step);
+        if (mode == VHFMODE) _vhfIfGainStep = step;
+        else if (mode == HFMODE) _hfIfGainStep = step;
+
+        RadioHandler.UpdateIFGain(step);
     }
 }
 
@@ -251,36 +414,212 @@ SoapySDR::Range SoapySDDC::getGainRange(const int direction, const size_t channe
 {
     DbgPrintf("SoapySDDC::getGainRange %s\n", name.c_str());
 
+    const float *steps = nullptr;
+    int len = 0;
+
     if (name == "RF") {
-        const float *steps;
-        int len = RadioHandler.GetRFAttSteps(&steps);
-        return SoapySDR::Range(
-            steps[0],
-            steps[len - 1]
-        );
+        len = RadioHandler.GetRFAttSteps(&steps);
     }
     else if (name == "IF") {
-        const float *steps;
-        int len = RadioHandler.GetIFGainSteps(&steps);
-        return SoapySDR::Range(
-            steps[0],
-            steps[len - 1]
-        );
+        len = RadioHandler.GetIFGainSteps(&steps);
     }
-    else
+    else {
         return SoapySDR::Range();
+    }
+
+    if (len <= 0 || steps == nullptr) {
+        return SoapySDR::Range();
+    }
+
+    /*
+     * HF RF is internally negative attenuation. Present it to Soapy/Gqrx as
+     * relative RF gain so 0 means lowest RF level.
+     */
+    const bool hfRfAttenuator =
+        (name == "RF" && len > 1 && steps[0] < 0.0f && steps[len - 1] <= 0.0f);
+
+    if (hfRfAttenuator) {
+        return SoapySDR::Range(0.0, double(steps[len - 1] - steps[0]));
+    }
+
+    return SoapySDR::Range(
+        std::min(double(steps[0]), double(steps[len - 1])),
+        std::max(double(steps[0]), double(steps[len - 1]))
+    );
 }
 
 void SoapySDDC::setFrequency(const int, const size_t, const double frequency, const SoapySDR::Kwargs &)
 {
     DbgPrintf("SoapySDDC::setFrequency %f\n", frequency);
-    centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+
+    const rf_mode wantedMode = RadioHandler.PrepareLo((uint64_t)frequency);
+    const rf_mode currentMode = RadioHandler.GetmodeRF();
+
+    /*
+     * Fast path: same RF mode tuning.
+     *
+     * Do not stop/start streaming for HF->HF or VHF->VHF tuning. Serialize
+     * the hardware/DSP control operation, but leave the sample stream active.
+     */
+    if (wantedMode == NOMODE || wantedMode == currentMode)
+    {
+        std::lock_guard<std::mutex> controlLock(_control_mutex);
+        centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+        return;
+    }
+
+    /*
+     * Slow path: HF<->VHF mode crossing. This changes GPIOs, tuner state,
+     * sideband/DSP behavior, and gain tables, so keep the safer stream
+     * pause/restart for now.
+     */
+    std::lock_guard<std::mutex> streamLock(_stream_mutex);
+
+    const bool restart = _streamActive.exchange(false);
+    if (restart)
+    {
+        RadioHandler.Stop();
+
+        resetBuffer = true;
+        bufferedElems = 0;
+        _currentBuff = nullptr;
+
+        {
+            std::lock_guard<std::mutex> bufLock(_buf_mutex);
+            _buf_count = 0;
+            _buf_head = 0;
+            _buf_tail = 0;
+            _overflowEvent = false;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> controlLock(_control_mutex);
+
+        DbgPrintf("SoapySDDC::setFrequency auto mode switch: %d -> %d\n",
+                  currentMode, wantedMode);
+
+        RadioHandler.UpdatemodeRF(wantedMode);
+        centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+
+        /*
+         * Reapply gain after both tuner init and tuner tune.
+         * R82xx init/tune may touch tuner registers, so gain should be last.
+         */
+        if (wantedMode == VHFMODE)
+        {
+            if (_vhfAgcMode)
+            {
+                setVhfAgcUnlocked(true);
+            }
+            else
+            {
+                if (_vhfRfGainStep >= 0) RadioHandler.UpdateattRF(_vhfRfGainStep);
+                if (_vhfIfGainStep >= 0) RadioHandler.UpdateIFGain(_vhfIfGainStep);
+            }
+        }
+        else if (wantedMode == HFMODE)
+        {
+            if (_hfRfGainStep >= 0) RadioHandler.UpdateattRF(_hfRfGainStep);
+            if (_hfIfGainStep >= 0) RadioHandler.UpdateIFGain(_hfIfGainStep);
+        }
+    }
+
+    if (restart)
+    {
+        resetBuffer = true;
+        bufferedElems = 0;
+        _currentBuff = nullptr;
+        _streamActive.store(true);
+        RadioHandler.Start(samplerateidx);
+    }
 }
 
 void SoapySDDC::setFrequency(const int, const size_t, const std::string &, const double frequency, const SoapySDR::Kwargs &)
 {
     DbgPrintf("SoapySDDC::setFrequency\n");
-    centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+
+    const rf_mode wantedMode = RadioHandler.PrepareLo((uint64_t)frequency);
+    const rf_mode currentMode = RadioHandler.GetmodeRF();
+
+    /*
+     * Fast path: same RF mode tuning.
+     *
+     * Do not stop/start streaming for HF->HF or VHF->VHF tuning. Serialize
+     * the hardware/DSP control operation, but leave the sample stream active.
+     */
+    if (wantedMode == NOMODE || wantedMode == currentMode)
+    {
+        std::lock_guard<std::mutex> controlLock(_control_mutex);
+        centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+        return;
+    }
+
+    /*
+     * Slow path: HF<->VHF mode crossing. This changes GPIOs, tuner state,
+     * sideband/DSP behavior, and gain tables, so keep the safer stream
+     * pause/restart for now.
+     */
+    std::lock_guard<std::mutex> streamLock(_stream_mutex);
+
+    const bool restart = _streamActive.exchange(false);
+    if (restart)
+    {
+        RadioHandler.Stop();
+
+        resetBuffer = true;
+        bufferedElems = 0;
+        _currentBuff = nullptr;
+
+        {
+            std::lock_guard<std::mutex> bufLock(_buf_mutex);
+            _buf_count = 0;
+            _buf_head = 0;
+            _buf_tail = 0;
+            _overflowEvent = false;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> controlLock(_control_mutex);
+
+        DbgPrintf("SoapySDDC::setFrequency auto mode switch: %d -> %d\n",
+                  currentMode, wantedMode);
+
+        RadioHandler.UpdatemodeRF(wantedMode);
+        centerFrequency = RadioHandler.TuneLO((uint64_t)frequency);
+
+        /*
+         * Reapply gain after both tuner init and tuner tune.
+         * R82xx init/tune may touch tuner registers, so gain should be last.
+         */
+        if (wantedMode == VHFMODE)
+        {
+            if (_vhfAgcMode)
+            {
+                setVhfAgcUnlocked(true);
+            }
+            else
+            {
+                if (_vhfRfGainStep >= 0) RadioHandler.UpdateattRF(_vhfRfGainStep);
+                if (_vhfIfGainStep >= 0) RadioHandler.UpdateIFGain(_vhfIfGainStep);
+            }
+        }
+        else if (wantedMode == HFMODE)
+        {
+            if (_hfRfGainStep >= 0) RadioHandler.UpdateattRF(_hfRfGainStep);
+            if (_hfIfGainStep >= 0) RadioHandler.UpdateIFGain(_hfIfGainStep);
+        }
+    }
+
+    if (restart)
+    {
+        resetBuffer = true;
+        bufferedElems = 0;
+        _currentBuff = nullptr;
+        _streamActive.store(true);
+        RadioHandler.Start(samplerateidx);
+    }
 }
 
 double SoapySDDC::getFrequency(const int, const size_t) const
