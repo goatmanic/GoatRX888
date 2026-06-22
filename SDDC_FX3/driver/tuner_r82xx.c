@@ -2367,13 +2367,60 @@ UINT8 m_mixergain_index = -1;
 int set_vga_gain(struct r82xx_priv *priv, UINT8 gain_index)
 {
 	int rc = 0;
+	if (gain_index > 15)
+		gain_index = 15;
+
 	if (m_vgagain_index != gain_index)
 	{
 		rc = r82xx_write_reg_mask(priv, 0x0c, gain_index, 0x0f);
-		if (rc == 0)
+		if (rc == 0) {
 			m_vgagain_index = gain_index;
+			priv->last_VGA_value = gain_index;
+		}
 	}
 
+	return rc;
+}
+
+/* Set one RF gain stage without disturbing the other stage or unrelated
+ * register bits. Selecting a manual value also takes that stage out of AGC. */
+int set_lna_gain(struct r82xx_priv *priv, UINT8 gain_index)
+{
+	int rc;
+	if (gain_index > 15)
+		gain_index = 15;
+
+	/* LNA auto off == manual. */
+	rc = r82xx_write_reg_mask(priv, 0x05, 0x10, 0x10);
+	if (rc < 0)
+		return rc;
+
+	rc = r82xx_write_reg_mask(priv, 0x05, gain_index, 0x0f);
+	if (rc == 0) {
+		m_lnagain_index = gain_index;
+		priv->last_LNA_value = gain_index;
+	}
+	return rc;
+}
+
+int set_mixer_gain(struct r82xx_priv *priv, UINT8 gain_index)
+{
+	int rc;
+	/* Code 15 has slightly less measured gain than code 14, so the public
+	 * monotonic slider intentionally stops at 14. */
+	if (gain_index > 14)
+		gain_index = 14;
+
+	/* Mixer auto off == manual. */
+	rc = r82xx_write_reg_mask(priv, 0x07, 0x00, 0x10);
+	if (rc < 0)
+		return rc;
+
+	rc = r82xx_write_reg_mask(priv, 0x07, gain_index, 0x0f);
+	if (rc == 0) {
+		m_mixergain_index = gain_index;
+		priv->last_Mixer_value = gain_index;
+	}
 	return rc;
 }
 
@@ -2409,8 +2456,56 @@ int set_all_gains(struct r82xx_priv *priv, UINT8 gain_index)
 	if (rc < 0)
 		return rc;
 
+	m_lnagain_index = lna_gain_idx;
+	m_mixergain_index = mixer_gain_idx;
+	priv->last_LNA_value = lna_gain_idx;
+	priv->last_Mixer_value = mixer_gain_idx;
+
   	DebugPrint(4, "\r\nset_all_gains %d",gain_index);
 
 	return 0;
+}
+
+/* Enable/disable R8xx LNA+mixer hardware AGC.
+ * Uses masked writes so AIR_CABLE1_IN / LOOP_THROUGH (R5) and
+ * IMG_R / mixer power+current (R7) are preserved, and the firmware
+ * register shadow stays in sync. on==0 restores the last manual gain. */
+int set_agc(struct r82xx_priv *priv, UINT8 on)
+{
+	int rc;
+
+	if (on) {
+		/* PRE_DECT on: fast overload detector damps AGC loop hunting/pumping.
+		 * Without it both LNA and mixer auto-track on the slow power detector
+		 * alone and overshoot, making the floor pump. */
+		rc = r82xx_write_reg_mask(priv, 0x06, 0x40, 0x40);
+		if (rc < 0)
+			return rc;
+
+		/* LNA auto on == AGC */
+		rc = r82xx_write_reg_mask(priv, 0x05, 0x00, 0x10);
+		if (rc < 0)
+			return rc;
+
+		/* Mixer auto on == AGC */
+		rc = r82xx_write_reg_mask(priv, 0x07, 0x10, 0x10);
+		if (rc < 0)
+			return rc;
+
+		DebugPrint(4, "\r\nset_agc ON");
+		return 0;
+	}
+
+	/* PRE_DECT off when leaving AGC. Restore the independently cached LNA
+	 * and mixer values rather than collapsing them back to the legacy combined
+	 * gain table. */
+	r82xx_write_reg_mask(priv, 0x06, 0x00, 0x40);
+	DebugPrint(4, "\r\nset_agc OFF -> restore LNA %d MIX %d",
+		priv->last_LNA_value, priv->last_Mixer_value);
+
+	rc = set_lna_gain(priv, (UINT8)priv->last_LNA_value);
+	if (rc < 0)
+		return rc;
+	return set_mixer_gain(priv, (UINT8)priv->last_Mixer_value);
 }
 #endif

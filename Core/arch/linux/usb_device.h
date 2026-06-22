@@ -50,6 +50,9 @@ int usb_device_handle_events(usb_device_t *t);
 
 void usb_device_close(usb_device_t *t);
 
+/* Nonzero when the negotiated link is only USB 2.0 high-speed (not SuperSpeed). */
+int usb_device_is_high_speed(usb_device_t *t);
+
 int usb_device_control(usb_device_t *t, uint8_t request, uint16_t value,
                        uint16_t index, uint8_t *data, uint16_t length, int read);
 

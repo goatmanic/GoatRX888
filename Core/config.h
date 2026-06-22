@@ -57,6 +57,24 @@
 enum rf_mode { NOMODE = 0, HFMODE = 0x1, VHFMODE = 0x2 }; 
 
 #define HF_HIGH (32000000)    // 32M
+
+// A USB 2.0 high-speed link (~40 MB/s usable) cannot carry the RX888's raw ADC
+// stream: the FX3 sends the full ADC samples and the host decimates, so the bus
+// load is adcfreq*2 bytes/s regardless of the output sample rate. Even the
+// 50 MHz floor is ~100 MB/s. When the host detects a high-speed link it clamps
+// the ADC clock into this window so the stream fits the bus instead of
+// overflowing. ~16 MHz -> ~32 MB/s: HF-direct covers DC..8 MHz; the R828D
+// (>=32 MHz) is unaffected since it downconverts to baseband.
+// USB 2.0 ADC window. Every menu clock is integer-N clean (Si5351 VCO =
+// N x 27 MHz, num = 0, no fractional-N spurs). DEFAULT (14.85 MHz, ~30 MB/s)
+// is the safe auto-clamp target -- what a fresh USB 2.0 open settles on
+// (DC-7.4 MHz: 160/80/60/40m). MAX (18.5625 MHz, ~37 MB/s) is the bus ceiling
+// the menu and range reach; a deliberate request up to MAX is honored, but
+// anything above it (e.g. a stray 128 MHz) falls back to DEFAULT instead of
+// snapping to the 37 MB/s edge.
+#define RX888_USB2_MAX_ADC_FREQ (18562500)
+#define RX888_USB2_DEFAULT_ADC_FREQ (14850000)
+#define RX888_USB2_MIN_ADC_FREQ (8100000)
 #define MW_HIGH ( 2000000)
 
 #define EXT_BLOCKLEN		512	* 64	/* 32768 only multiples of 512 */

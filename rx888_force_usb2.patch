@@ -1,0 +1,19 @@
+diff --git a/SDDC_FX3/USBhandler.c b/SDDC_FX3/USBhandler.c
+index 8907200..ee9bcd8 100644
+--- a/SDDC_FX3/USBhandler.c
++++ b/SDDC_FX3/USBhandler.c
+@@ -635,10 +635,12 @@ CyU3PReturnStatus_t InitializeUSB(uint8_t hwconfig)
+     // Driver needs all of the descriptors so it can supply them to the host when requested
+     Status = SetUSBdescriptors(hwconfig);
+     CheckStatus("Set USB Descriptors", Status);
+-    // Connect the USB Pins with SuperSpeed operation enabled
++    // Connect the USB pins, forced to USB 2.0 high-speed (SuperSpeed disabled).
++    // Pair with the high-speed endpoint config in StartApplication (burst 1, 512B)
++    // and the host-side high-speed acceptance in usb_device.c.
+     if (NeedToRenumerate)
+     {
+-		  Status = CyU3PConnectState(CyTrue, CyTrue);
++		  Status = CyU3PConnectState(CyTrue, CyFalse);
+ 		  CheckStatus("ConnectUSB", Status);
+ 
+     }

@@ -224,6 +224,11 @@ bool RadioHandlerClass::UpdateSampleRate(uint32_t samplefreq)
 	return 0;
 }
 
+bool RadioHandlerClass::ConfigureVhfBandwidth(double outputRate)
+{
+	return hardware->ConfigureVhfBandwidth(outputRate, adcrate);
+}
+
 // attenuator RF used in HF
 int RadioHandlerClass::UpdateattRF(int att)
 {
@@ -245,6 +250,21 @@ int RadioHandlerClass::UpdateIFGain(int idx)
 	return 0;
 }
 
+int RadioHandlerClass::UpdateVhfLnaGain(int idx)
+{
+	return hardware->UpdateVhfLnaGain(idx) ? idx : 0;
+}
+
+int RadioHandlerClass::UpdateVhfMixerGain(int idx)
+{
+	return hardware->UpdateVhfMixerGain(idx) ? idx : 0;
+}
+
+int RadioHandlerClass::UpdateExternalVgaGain(int idx)
+{
+	return hardware->UpdateExternalVgaGain(idx) ? idx : 0;
+}
+
 int RadioHandlerClass::GetRFAttSteps(const float **steps) const
 {
 	return hardware->getRFSteps(steps);
@@ -253,6 +273,31 @@ int RadioHandlerClass::GetRFAttSteps(const float **steps) const
 int RadioHandlerClass::GetIFGainSteps(const float **steps) const
 {
 	return hardware->getIFSteps(steps);
+}
+
+int RadioHandlerClass::GetHfAttGainSteps(const float **steps) const
+{
+	return hardware->getHfAttSteps(steps);
+}
+
+int RadioHandlerClass::GetVhfIfGainSteps(const float **steps) const
+{
+	return hardware->getVhfIfSteps(steps);
+}
+
+int RadioHandlerClass::GetVhfLnaGainSteps(const float **steps) const
+{
+	return hardware->getVhfLnaSteps(steps);
+}
+
+int RadioHandlerClass::GetVhfMixerGainSteps(const float **steps) const
+{
+	return hardware->getVhfMixerSteps(steps);
+}
+
+int RadioHandlerClass::GetExternalVgaGainSteps(const float **steps) const
+{
+	return hardware->getExternalVgaSteps(steps);
 }
 
 bool RadioHandlerClass::UpdatemodeRF(rf_mode mode)

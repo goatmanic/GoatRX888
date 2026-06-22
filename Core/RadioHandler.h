@@ -40,7 +40,15 @@ public:
     int UpdateattRF(int attIdx);
 
     int GetIFGainSteps(const float **steps) const;
+    int GetHfAttGainSteps(const float **steps) const;
+    int GetVhfIfGainSteps(const float **steps) const;
+    int GetVhfLnaGainSteps(const float **steps) const;
+    int GetVhfMixerGainSteps(const float **steps) const;
+    int GetExternalVgaGainSteps(const float **steps) const;
     int UpdateIFGain(int attIdx);
+    int UpdateVhfLnaGain(int idx);
+    int UpdateVhfMixerGain(int idx);
+    int UpdateExternalVgaGain(int idx);
 
     bool UpdatemodeRF(rf_mode mode);
     rf_mode GetmodeRF() const {return (rf_mode)modeRF;}
@@ -54,6 +62,7 @@ public:
 
     uint32_t getSampleRate() { return adcrate; }
     bool UpdateSampleRate(uint32_t samplerate);
+    bool ConfigureVhfBandwidth(double outputRate);
 
     float getBps() const { return mBps; }
     float getSpsIF() const {return mSpsIF; }
@@ -144,7 +153,17 @@ public:
 
     virtual int getRFSteps(const float** steps ) const { return 0; }
     virtual int getIFSteps(const float** steps ) const { return 0; }
+    virtual int getHfAttSteps(const float** steps ) const { (void)steps; return 0; }
+    virtual int getVhfIfSteps(const float** steps ) const { (void)steps; return 0; }
+    virtual int getVhfLnaSteps(const float** steps ) const { (void)steps; return 0; }
+    virtual int getVhfMixerSteps(const float** steps ) const { (void)steps; return 0; }
+    virtual int getExternalVgaSteps(const float** steps ) const { (void)steps; return 0; }
     virtual bool UpdateGainIF(int attIndex) { return false; }
+    virtual bool UpdateVhfLnaGain(int gainIndex) { (void)gainIndex; return false; }
+    virtual bool UpdateVhfMixerGain(int gainIndex) { (void)gainIndex; return false; }
+    virtual bool UpdateExternalVgaGain(int gainIndex) { (void)gainIndex; return false; }
+    virtual bool ConfigureVhfBandwidth(double outputRate, uint32_t adcRate)
+        { (void)outputRate; (void)adcRate; return true; }
 
     bool FX3producerOn() { return Fx3->Control(STARTFX3); }
     bool FX3producerOff() { return Fx3->Control(STOPFX3); }
@@ -203,22 +222,37 @@ public:
     uint64_t TuneLo(uint64_t freq) override;
     bool UpdateattRF(int attIndex) override;
     bool UpdateGainIF(int attIndex) override;
+    bool UpdateVhfLnaGain(int gainIndex) override;
+    bool UpdateVhfMixerGain(int gainIndex) override;
+    bool UpdateExternalVgaGain(int gainIndex) override;
+    bool ConfigureVhfBandwidth(double outputRate, uint32_t adcRate) override;
 
     int getRFSteps(const float** steps ) const override;
     int getIFSteps(const float** steps ) const override;
+    int getHfAttSteps(const float** steps ) const override;
+    int getVhfIfSteps(const float** steps ) const override;
+    int getVhfLnaSteps(const float** steps ) const override;
+    int getVhfMixerSteps(const float** steps ) const override;
+    int getExternalVgaSteps(const float** steps ) const override;
 
 private:
     static const int  hf_rf_step_size = 64;
     static const int  hf_if_step_size = 127;
     static const int vhf_if_step_size = 16;
     static const int vhf_rf_step_size = 29;
+    static const int vhf_lna_step_size = 16;
+    static const int vhf_mixer_step_size = 15;
 
     float  hf_rf_steps[hf_rf_step_size];
     float  hf_if_steps[hf_if_step_size];
     static const float vhf_rf_steps[vhf_rf_step_size];
     static const float vhf_if_steps[vhf_if_step_size];
+    static const float vhf_lna_steps[vhf_lna_step_size];
+    static const float vhf_mixer_steps[vhf_mixer_step_size];
 
     uint32_t SampleRate;
+    uint32_t vhfIfFrequency;
+    uint16_t vhfFilterProfile;
 };
 
 class RX888R3Radio : public RadioHardware {

@@ -1,0 +1,82 @@
+diff --git a/Core/arch/linux/FX3handler.cpp b/Core/arch/linux/FX3handler.cpp
+index e37e289..318a620 100644
+--- a/Core/arch/linux/FX3handler.cpp
++++ b/Core/arch/linux/FX3handler.cpp
+@@ -31,10 +31,16 @@ bool fx3handler::Open()
+     dev = usb_device_open(devidx, firmware_data, firmware_size);
+     DbgPrintf("Open DevIdx=%d dev=%p\n", devidx, dev);
+ 
++    // usb_device_open() returns NULL on busy / not-found / failed
++    // re-enumeration. Do not touch the device in that case - Control()
++    // dereferences dev and would segfault (and take down SoapySDRServer).
++    if (dev == nullptr)
++        return false;
++
+     usleep(5000);
+     Control(STOPFX3, (uint8_t)0);
+ 
+-    return dev != nullptr;
++    return true;
+ }
+ 
+ bool fx3handler::Close(void)
+diff --git a/Core/arch/linux/usb_device.c b/Core/arch/linux/usb_device.c
+index 1384430..ce09738 100644
+--- a/Core/arch/linux/usb_device.c
++++ b/Core/arch/linux/usb_device.c
+@@ -262,11 +262,23 @@ usb_device_t *usb_device_open(int index, const char* image,
+     /* rescan USB to get a new device handle */
+     libusb_close(dev_handle);
+ 
+-    /* wait unitl firmware is ready */
+-    usleep(500 * 1000L);
+-
+-    needs_firmware = 0;
+-    dev_handle = find_usb_device(index, ctx, &device, &needs_firmware);
++    /* Wait until the firmware re-enumerates as the application device.
++     * Re-enumeration can take longer than a single fixed delay (slow hubs,
++     * SuperSpeed re-negotiation), so retry instead of failing on first miss. */
++    dev_handle = 0;
++    for (int attempt = 0; attempt < 10; ++attempt) {
++      usleep(300 * 1000L);
++      needs_firmware = 0;
++      dev_handle = find_usb_device(index, ctx, &device, &needs_firmware);
++      if (dev_handle != 0 && !needs_firmware) {
++        break;          /* booted application device acquired */
++      }
++      if (dev_handle != 0) {
++        /* still in boot loader mode - release and retry */
++        libusb_close(dev_handle);
++        dev_handle = 0;
++      }
++    }
+     if (dev_handle == 0) {
+       goto FAIL1;
+     }
+diff --git a/SDDC_FX3/driver/tuner_r82xx.c b/SDDC_FX3/driver/tuner_r82xx.c
+index 751fe22..4b7a583 100644
+--- a/SDDC_FX3/driver/tuner_r82xx.c
++++ b/SDDC_FX3/driver/tuner_r82xx.c
+@@ -2423,6 +2423,13 @@ int set_agc(struct r82xx_priv *priv, UINT8 on)
+ 	int rc;
+ 
+ 	if (on) {
++		/* PRE_DECT on: fast overload detector damps AGC loop hunting/pumping.
++		 * Without it both LNA and mixer auto-track on the slow power detector
++		 * alone and overshoot, making the floor pump. */
++		rc = r82xx_write_reg_mask(priv, 0x06, 0x40, 0x40);
++		if (rc < 0)
++			return rc;
++
+ 		/* LNA auto on == AGC */
+ 		rc = r82xx_write_reg_mask(priv, 0x05, 0x00, 0x10);
+ 		if (rc < 0)
+@@ -2437,6 +2444,8 @@ int set_agc(struct r82xx_priv *priv, UINT8 on)
+ 		return 0;
+ 	}
+ 
++	/* PRE_DECT off when leaving AGC */
++	r82xx_write_reg_mask(priv, 0x06, 0x00, 0x40);
+ 	DebugPrint(4, "\r\nset_agc OFF -> restore manual %d", m_gain_index);
+ 	return set_all_gains(priv, m_gain_index);
+ }

@@ -95,10 +95,18 @@ void StartApplication ( void ) {
     CyU3PMemSet ((uint8_t *)&epCfg, 0, sizeof (epCfg));
     epCfg.enable = CyTrue;
     epCfg.epType = CY_U3P_USB_EP_BULK;
-    epCfg.burstLen = ENDPOINT_BURST_LENGTH;
     epCfg.streams = 0;
-    epCfg.pcktSize = ENDPOINT_BURST_SIZE;
     epCfg.isoPkts = 1;
+    /* Burst and 1024-byte packets are SuperSpeed-only. High-speed (USB 2.0)
+     * bulk endpoints must use burst length 1 and a 512-byte max packet, or
+     * CyU3PSetEpConfig() fails and streaming never starts. */
+    if (usbSpeed == CY_U3P_SUPER_SPEED) {
+        epCfg.burstLen = ENDPOINT_BURST_LENGTH;
+        epCfg.pcktSize = ENDPOINT_BURST_SIZE;
+    } else {
+        epCfg.burstLen = 1;
+        epCfg.pcktSize = 512;
+    }
 
     glDMACount= 0;
     /* Consumer endpoint configuration */

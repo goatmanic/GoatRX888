@@ -86,6 +86,8 @@ public:
 
     // double getGain(const int direction, const size_t channel) const;
 
+    double getGain(const int direction, const size_t channel, const std::string &name) const;
+
     SoapySDR::Range getGainRange(const int direction, const size_t channel, const std::string &name) const;
 
     void setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args = SoapySDR::Kwargs());
@@ -143,12 +145,23 @@ private:
 
     // Helper to check if device supports high ADC frequencies
     bool supportsHighADCFrequency() const;
+
+    // USB 2.0 profile control. The "usb2" device arg / setting selects: "auto"
+    // (default) clamps the ADC only when the link actually negotiated high-speed;
+    // "force" applies the bus-safe clamp even on a SuperSpeed link.
+    bool _usb2Forced{false};
+    bool usb2Active() const;   // _usb2Forced || link negotiated high-speed
     
     // Compute expected sample rate for given index based on current ADC frequency
     double computeSampleRateFromIndex(int idx) const;
     
     // Find best sample rate index for requested rate, returns -1 if invalid
     int findSampleRateIndex(double rate) const;
+
+    void restoreVhfGainsUnlocked();
+    void restoreHfGainsUnlocked();
+    int nearestGainStep(const float *steps, int len, double value,
+                        bool relativeAttenuator = false) const;
 
 public:
     int Callback(void *context, const float *data, uint32_t len);
@@ -169,9 +182,13 @@ public:
     std::mutex _stream_mutex;
     std::mutex _control_mutex;
     int _hfRfGainStep{-1};
-    int _hfIfGainStep{-1};
-    int _vhfRfGainStep{-1};
+    int _hfIfGainStep{-1};       // legacy alias for the external VGA
+    int _hfVgaGainStep{-1};
+    int _vhfRfGainStep{-1};      // legacy combined R828D RF alias
+    int _vhfLnaGainStep{-1};
+    int _vhfMixerGainStep{-1};
     int _vhfIfGainStep{-1};
+    int _vhfVgaGainStep{-1};
     bool _vhfAgcMode{false};
     std::atomic<bool> _streamActive{false};
 

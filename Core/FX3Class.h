@@ -38,6 +38,9 @@ public:
 	virtual void StartStream(ringbuffer<int16_t>& input, int numofblock) = 0;
 	virtual void StopStream() = 0;
 	virtual bool Enumerate(unsigned char& idx, char* lbuf) = 0;
+	// True when the negotiated USB link is only high-speed (USB 2.0), not
+	// SuperSpeed. Default false for backends that don't report link speed.
+	virtual bool IsHighSpeed() { return false; }
 };
 
 extern "C" fx3class* CreateUsbHandler();

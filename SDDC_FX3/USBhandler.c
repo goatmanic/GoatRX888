@@ -45,8 +45,33 @@ struct r82xx_config tuner_config;
 
 extern int set_all_gains(struct r82xx_priv *priv, UINT8 gain_index);
 extern int set_vga_gain(struct r82xx_priv *priv, UINT8 gain_index);
+extern int set_lna_gain(struct r82xx_priv *priv, UINT8 gain_index);
+extern int set_mixer_gain(struct r82xx_priv *priv, UINT8 gain_index);
+extern int set_agc(struct r82xx_priv *priv, UINT8 on);
 extern uint8_t m_gain_index;
 
+/* Apply one of the host-visible R82xx IF filter profiles.  The 5 MHz
+ * profile is selected with a 4.5 MHz request because r82xx_set_bandwidth()
+ * uses >4.5 MHz for its separate 6 MHz branch. */
+static int r82xx_set_filter_profile(struct r82xx_priv *priv, uint16_t profile)
+{
+    uint32_t applied_bw = 0;
+    int requested_bw;
+
+    switch (profile)
+    {
+        case R82XX_FILTER_600K:  requested_bw =  600000; break;
+        case R82XX_FILTER_1100K: requested_bw = 1100000; break;
+        case R82XX_FILTER_2200K: requested_bw = 2200000; break;
+        case R82XX_FILTER_3000K: requested_bw = 3000000; break;
+        case R82XX_FILTER_5000K: requested_bw = 4500000; break;
+        case R82XX_FILTER_6000K: requested_bw = 6000000; break;
+        case R82XX_FILTER_8000K: requested_bw = 8000000; break;
+        default: return -1;
+    }
+
+    return r82xx_set_bandwidth(priv, requested_bw, 0, &applied_bw, 1);
+}
 
 
 #define CYFX_SDRAPP_MAX_EP0LEN  64      /* Max. data length supported for EP0 requests. */
@@ -386,6 +411,18 @@ CyFxSlFifoApplnUSBSetupCB (
 						case R82XX_VGA:
 							rc = set_vga_gain(&tuner, wValue); // R820T2 set vga
 							break;
+						case R82XX_AGC:
+							rc = set_agc(&tuner, wValue); // R820T2 LNA+mixer AGC
+							break;
+						case R82XX_FILTER_PROFILE:
+							rc = r82xx_set_filter_profile(&tuner, wValue);
+							break;
+						case R82XX_LNA_GAIN:
+							rc = set_lna_gain(&tuner, wValue);
+							break;
+						case R82XX_MIXER_GAIN:
+							rc = set_mixer_gain(&tuner, wValue);
+							break;
 						case R82XX_SIDEBAND:
 							rc = r82xx_set_sideband(&tuner, wValue);
 							break;
@@ -631,10 +668,20 @@ CyU3PReturnStatus_t InitializeUSB(uint8_t hwconfig)
     // Driver needs all of the descriptors so it can supply them to the host when requested
     Status = SetUSBdescriptors(hwconfig);
     CheckStatus("Set USB Descriptors", Status);
-    // Connect the USB Pins with SuperSpeed operation enabled
+    // Connect the USB pins. Default builds negotiate SuperSpeed (USB 3). A build
+    // with RX888_USB2=1 forces a high-speed (USB 2.0) link instead -- more
+    // tolerant of marginal cables, with the host clamping the ADC rate so the
+    // narrower pipe doesn't overflow (see StartApplication EP config + usb_device.c).
     if (NeedToRenumerate)
     {
+#ifdef RX888_USB2
+		  /* USB 2.0 mode (built with RX888_USB2=1): force a high-speed link by
+		     disabling SuperSpeed negotiation. More tolerant of marginal cables;
+		     the host clamps the ADC rate so the narrower pipe doesn't overflow. */
+		  Status = CyU3PConnectState(CyTrue, CyFalse);
+#else
 		  Status = CyU3PConnectState(CyTrue, CyTrue);
+#endif
 		  CheckStatus("ConnectUSB", Status);
 
     }

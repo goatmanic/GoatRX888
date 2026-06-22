@@ -56,7 +56,7 @@ const char* FX3CommandName[] = {  // start 0xAA
 
 // For Debug and display the name of the FX3Command
 const char* SETARGFX3List[] = { 
-"0", "R82XX_ATTENUATOR","R82XX_VGA","R82XX_SIDEBAND","R82XX_HARMONIC","5","6","7","8","9",
+"0", "R82XX_ATTENUATOR","R82XX_VGA","R82XX_SIDEBAND","R82XX_HARMONIC","R82XX_AGC","R82XX_FILTER_PROFILE","R82XX_LNA_GAIN","R82XX_MIXER_GAIN","9",
 "DAT31_ATT","AD8340_VGA","PRESELECTOR","VHF_ATTENUATOR"
 };
 #endif

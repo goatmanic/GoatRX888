@@ -269,3 +269,29 @@ __pycache__/
 
 # FFTW wisdom files
 wisdom*
+
+# Local build/install outputs
+/build*/
+/test-install/
+/SDK/
+
+# FX3 build products; the root SDDC_FX3.img remains tracked
+/SDDC_FX3/*.elf
+/SDDC_FX3/*.map
+/SDDC_FX3/elf2img
+/SDDC_FX3/SDDC_FX3.img
+/SDDC_FX3/SDDC_FX3.img.*
+/SDDC_FX3/*_usb2.img
+
+# Editor and backup files
+*.orig
+*.bak
+*.b64
+
+# Compiled objects
+*.o
+*.a
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake

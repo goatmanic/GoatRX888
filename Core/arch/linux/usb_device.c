@@ -262,11 +262,23 @@ usb_device_t *usb_device_open(int index, const char* image,
     /* rescan USB to get a new device handle */
     libusb_close(dev_handle);
 
-    /* wait unitl firmware is ready */
-    usleep(500 * 1000L);
-
-    needs_firmware = 0;
-    dev_handle = find_usb_device(index, ctx, &device, &needs_firmware);
+    /* Wait until the firmware re-enumerates as the application device.
+     * Re-enumeration can take longer than a single fixed delay (slow hubs,
+     * SuperSpeed re-negotiation), so retry instead of failing on first miss. */
+    dev_handle = 0;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+      usleep(300 * 1000L);
+      needs_firmware = 0;
+      dev_handle = find_usb_device(index, ctx, &device, &needs_firmware);
+      if (dev_handle != 0 && !needs_firmware) {
+        break;          /* booted application device acquired */
+      }
+      if (dev_handle != 0) {
+        /* still in boot loader mode - release and retry */
+        libusb_close(dev_handle);
+        dev_handle = 0;
+      }
+    }
     if (dev_handle == 0) {
       goto FAIL1;
     }
@@ -277,9 +289,12 @@ usb_device_t *usb_device_open(int index, const char* image,
   }
 
   int speed = libusb_get_device_speed(device);
-  if ( speed == LIBUSB_SPEED_LOW || speed == LIBUSB_SPEED_FULL || speed == LIBUSB_SPEED_HIGH ) {
-      log_error("USB 3.x SuperSpeed connection failed", __func__, __FILE__, __LINE__);
+  if ( speed == LIBUSB_SPEED_LOW || speed == LIBUSB_SPEED_FULL ) {
+      log_error("USB connection too slow - need USB 2.0 high-speed or better", __func__, __FILE__, __LINE__);
       goto FAIL2;
+  }
+  if ( speed == LIBUSB_SPEED_HIGH ) {
+      fprintf(stderr, "WARNING - USB 2.0 high-speed link; limited to low sample rates\n");
   }
 
   /* list endpoints */
@@ -324,6 +339,7 @@ usb_device_t *usb_device_open(int index, const char* image,
   this->bulk_in_endpoint_address = bulk_in_endpoint_address;
   this->bulk_in_max_packet_size = bulk_in_max_packet_size;
   this->bulk_in_max_burst = bulk_in_max_burst;
+  this->speed = speed;
 
   ret_val = this;
   return ret_val;
@@ -349,6 +365,14 @@ void usb_device_close(usb_device_t *this)
 int usb_device_handle_events(usb_device_t *this)
 {
   return libusb_handle_events_completed(this->context, &this->completed);
+}
+
+/* Returns nonzero when the negotiated USB link is only high-speed (USB 2.0)
+   rather than SuperSpeed. Used by the host to clamp the ADC rate to a value the
+   bus can carry. Returns int (not bool) to keep the C/C++ ABI simple. */
+int usb_device_is_high_speed(usb_device_t *this)
+{
+  return (this != NULL && this->speed == LIBUSB_SPEED_HIGH) ? 1 : 0;
 }
 
 int usb_device_control(usb_device_t *this, uint8_t request, uint16_t value,

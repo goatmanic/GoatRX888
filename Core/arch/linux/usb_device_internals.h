@@ -42,6 +42,7 @@ typedef struct usb_device {
   uint8_t bulk_in_endpoint_address;
   uint16_t bulk_in_max_packet_size;
   uint8_t bulk_in_max_burst;
+  int speed;                 /* libusb negotiated link speed (LIBUSB_SPEED_*) */
 } usb_device_t;
 typedef struct usb_device usb_device_t;
 

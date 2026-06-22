@@ -31,10 +31,16 @@ bool fx3handler::Open()
     dev = usb_device_open(devidx, firmware_data, firmware_size);
     DbgPrintf("Open DevIdx=%d dev=%p\n", devidx, dev);
 
+    // usb_device_open() returns NULL on busy / not-found / failed
+    // re-enumeration. Do not touch the device in that case - Control()
+    // dereferences dev and would segfault (and take down SoapySDRServer).
+    if (dev == nullptr)
+        return false;
+
     usleep(5000);
     Control(STOPFX3, (uint8_t)0);
 
-    return dev != nullptr;
+    return true;
 }
 
 bool fx3handler::Close(void)
@@ -47,6 +53,11 @@ bool fx3handler::Close(void)
     }
 
     return true;
+}
+
+bool fx3handler::IsHighSpeed()
+{
+    return dev != nullptr && usb_device_is_high_speed(dev) != 0;
 }
 
 bool fx3handler::Control(FX3Command command, uint8_t data)

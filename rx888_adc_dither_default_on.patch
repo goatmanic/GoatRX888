@@ -1,0 +1,16 @@
+--- /home/goatman/Software/ExtIO_sddc-2ma-dither/SoapySDDC/Settings.cpp.before-dither	2026-06-22 06:39:35.984929928 +0200
++++ /home/goatman/Software/ExtIO_sddc-2ma-dither/SoapySDDC/Settings.cpp	2026-06-22 08:30:37.815926089 +0200
+@@ -155,6 +155,13 @@
+         RadioHandler.UpdateSampleRate(adcnominalfreq);
+     }
+     
++    // 2 mA + ADC-dither test build.
++    // DITH is active-high on the RX888 and controls the LTC2208's
++    // internal analog dither circuit.
++    RadioHandler.UptDither(true);
++    SoapySDR_logf(SOAPY_SDR_INFO,
++                  "ADC dither enabled by 2mA+dither test build");
++
+     // Initialize samplerateidx to match default sampleRate = 32MHz
+     // In both modes (high-ADC and standard), 32MHz maps to index 4
+     samplerateidx = 4;

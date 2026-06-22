@@ -28,6 +28,7 @@ public:
 	void StartStream(ringbuffer<int16_t>& input, int numofblock) override;
 	void StopStream() override;
 	bool Enumerate(unsigned char &idx, char *lbuf) override;
+	bool IsHighSpeed() override;
 
 private:
 	bool ReadUsb(uint8_t command, uint16_t value, uint16_t index, uint8_t *data, size_t size);

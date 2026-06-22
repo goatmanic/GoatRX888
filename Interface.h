@@ -131,6 +131,19 @@ enum ArgumentList {
     // value: 0/1
     R82XX_HARMONIC = 4,
 
+    // Enable R8xx LNA+mixer hardware AGC (masked writes, shadow-safe)
+    // value: 0 = manual (restore last gain), 1 = auto
+    R82XX_AGC = 5,
+
+    // Select an R82xx analog IF-filter profile. The profile also determines
+    // the tuner's low-IF center frequency; host and firmware must agree.
+    R82XX_FILTER_PROFILE = 6,
+
+    // Set the R82xx LNA and mixer stages independently.
+    // Values are raw hardware gain indices.
+    R82XX_LNA_GAIN = 7,      // 0-15
+    R82XX_MIXER_GAIN = 8,    // 0-14 (index 15 is non-monotonic)
+
     // Set DAT-31 Att
     // Value: 0-63
     DAT31_ATT = 10,
@@ -146,6 +159,18 @@ enum ArgumentList {
     // VHFATT
     // Value: 0-15
     VHF_ATTENUATOR = 13,
+};
+
+// Values for R82XX_FILTER_PROFILE. Keep these stable: they cross the USB
+// control interface between the host library and FX3 firmware.
+enum R82xxFilterProfile {
+    R82XX_FILTER_600K = 0,
+    R82XX_FILTER_1100K = 1,
+    R82XX_FILTER_2200K = 2,
+    R82XX_FILTER_3000K = 3,
+    R82XX_FILTER_5000K = 4,
+    R82XX_FILTER_6000K = 5,
+    R82XX_FILTER_8000K = 6,
 };
 
 #define _DEBUG_USB_  

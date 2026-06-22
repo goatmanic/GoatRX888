@@ -1,0 +1,39 @@
+diff --git a/SoapySDDC/Settings.cpp b/SoapySDDC/Settings.cpp
+index 5927387..ece4163 100644
+--- a/SoapySDDC/Settings.cpp
++++ b/SoapySDDC/Settings.cpp
+@@ -8,6 +8,8 @@
+ #include <cstdio>
+ #include <algorithm>
+ #include <cmath>
++#include <unistd.h>
++#include <stdexcept>
+ 
+ static void _Callback(void *context, const float *data, uint32_t len)
+ {
+@@ -54,7 +56,24 @@ SoapySDDC::SoapySDDC(const SoapySDR::Kwargs &args) : deviceId(-1),
+     unsigned char idx = 0;
+     DevContext devicelist;
+     Fx3->Enumerate(idx, devicelist.dev[0]);
+-    Fx3->Open();
++
++    // Open() can fail when the post-upload re-enumeration races: the device
++    // switches from the DFU bootloader to the application, which comes up on
++    // the SuperSpeed bus, and the immediate re-find can miss it
++    // ("usb_device@0 not found"). After a failed attempt the device is already
++    // running the application, so retrying re-finds and opens it directly
++    // without uploading firmware again. Previously Open()'s return was ignored
++    // and the constructor built a dead handle (gain stuck, stream silent).
++    bool opened = Fx3->Open();
++    for (int attempt = 1; !opened && attempt < 10; ++attempt) {
++        usleep(300000);
++        Fx3->Enumerate(idx, devicelist.dev[0]);
++        opened = Fx3->Open();
++    }
++    if (!opened) {
++        throw std::runtime_error("SoapySDDC: failed to open device after firmware upload");
++    }
++
+     RadioHandler.Init(Fx3, _Callback, nullptr, this);
+ 
+     if (supportsHighADCFrequency()) {

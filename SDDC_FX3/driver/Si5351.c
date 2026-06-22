@@ -191,9 +191,9 @@ void si5351aSetFrequencyA(UINT32 freq)
 	// Reset the PLL. This causes a glitch in the output. For small changes to
 	// the parameters, you don't need to reset the PLL, and there is no glitch
 	I2cTransferW1 (SI_PLL_RESET , SI5351_ADDR, 0x20);//pllA
-	// Finally switch on the CLK0 output (0x4F)
+	// Finally switch on CLK0 at 2 mA drive (0x4C)
 	// and set the MultiSynth0 input to be PLL A
-	I2cTransferW1 (SI_CLK0_CONTROL, SI5351_ADDR,  0x4F | SI_CLK_SRC_PLL_A);
+	I2cTransferW1 (SI_CLK0_CONTROL, SI5351_ADDR,  0x4C | SI_CLK_SRC_PLL_A);
 
 }
 

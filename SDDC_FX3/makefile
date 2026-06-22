@@ -30,6 +30,15 @@ all:$(MODULE).img
 
 USER_CFLAGS = -I./radio -I./driver
 
+# USB 2.0 mode (off by default). When set, the FX3 enumerates as high-speed
+# only, disabling SuperSpeed negotiation for a more cable-tolerant link at the
+# cost of bandwidth (the host clamps the ADC rate to match). Build with:
+#     make RX888_USB2=1
+RX888_USB2 ?= 0
+ifeq ($(RX888_USB2),1)
+USER_CFLAGS += -DRX888_USB2
+endif
+
 vpath %.c driver
 vpath %.c radio
 
