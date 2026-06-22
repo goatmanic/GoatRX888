@@ -483,3 +483,53 @@ Initial version
 https://sdr-prototypes.blogspot.com/
 
 http://www.steila.com/blog
+
+## GoatRX888 custom features
+
+This fork adds RX888mkII improvements focused on reliable USB 2.0 operation, cleaner ADC clocking, improved VHF filtering, and full gain-stage control.
+
+### Features
+
+- Forced USB 2.0 FX3 firmware and host-side `usb2=force` support.
+- Default ADC clock of 14.85 MHz.
+- Default complex output rate of 1.85625 MS/s after `/8` decimation.
+- Integer-N Si5351 clock choices where possible to reduce fractional-divider spurs.
+- Si5351 CLK0 drive reduced from 8 mA to 2 mA.
+- LTC2208 dither enabled by default.
+- LTC2208 output randomizer enabled by default.
+- Dynamic R828D IF and analog-filter selection based on output sample rate.
+- At 1.85625 MS/s, the VHF path uses approximately a 1.6 MHz IF and a 2.2 MHz analog filter.
+- Hardware AGC disable behavior corrected so manual gain settings remain stable.
+- Independent gain stages exposed through SoapySDR and Gqrx.
+
+### Gain controls
+
+- `ATT` — PE4304 attenuator in the HF path
+- `LNA` — R828D LNA
+- `MIX` — R828D mixer gain
+- `IF` — R828D IF VGA
+- `VGA` — external RX888mkII AD8370 VGA
+
+The active VHF gain path is approximately:
+
+    R828D LNA -> R828D mixer -> R828D IF VGA -> AD8370 VGA -> LTC2208 ADC
+
+`ATT` belongs to the HF path and is not part of the active VHF gain chain.
+
+### USB 2.0 usage
+
+Local probe:
+
+    SoapySDRUtil --probe="driver=SDDC,usb2=force"
+
+SoapyRemote/Gqrx device string:
+
+    soapy=0,driver=remote,remote=192.168.50.1:55132,remote:driver=SDDC,remote:usb2=force
+
+Recommended Gqrx input sample rate with the default USB 2.0 ADC clock:
+
+    1856250
+
+The root `SDDC_FX3.img` currently contains the customized USB 2.0 firmware.
+
+Runtime selection between embedded USB 2.0 and USB 3.0 firmware images using `firmware=usb2`, `firmware=usb3`, or `firmware=auto` is planned but not yet implemented.
