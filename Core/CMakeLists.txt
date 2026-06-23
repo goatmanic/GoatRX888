@@ -41,9 +41,29 @@ endif (MSVC)
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 
-# Generatge firmware
+# Generate embedded firmware images.
 include(bin2h.cmake)
-bin2h(SOURCE_FILE "../SDDC_FX3.img" HEADER_FILE "${CMAKE_BINARY_DIR}/firmware.h" VARIABLE_NAME "firmware")
+
+if (MSVC)
+    # Preserve the existing Windows backend for now.
+    bin2h(
+        SOURCE_FILE "../SDDC_FX3.img"
+        HEADER_FILE "${CMAKE_BINARY_DIR}/firmware.h"
+        VARIABLE_NAME "firmware"
+    )
+else()
+    bin2h(
+        SOURCE_FILE "../firmware/SDDC_FX3_usb2.img"
+        HEADER_FILE "${CMAKE_BINARY_DIR}/firmware_usb2.h"
+        VARIABLE_NAME "firmware_usb2"
+    )
+    bin2h(
+        SOURCE_FILE "../firmware/SDDC_FX3_usb3.img"
+        HEADER_FILE "${CMAKE_BINARY_DIR}/firmware_usb3.h"
+        VARIABLE_NAME "firmware_usb3"
+    )
+endif()
+
 include_directories(${CMAKE_BINARY_DIR})
 
 add_library(SDDC_CORE STATIC ${SRC})

@@ -1,14 +1,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <stdio.h>
 
 #include "FX3handler.h"
 #include "usb_device.h"
 #include "ezusb.h"
-#include "firmware.h"
+#include "firmware_usb2.h"
+#include "firmware_usb3.h"
 
-#define firmware_data ((const char *)FIRMWARE)
-#define firmware_size sizeof(FIRMWARE)
+#define firmware_usb2_data ((const char *)FIRMWARE_USB2)
+#define firmware_usb2_size ((uint32_t)FIRMWARE_USB2_SIZE)
+#define firmware_usb3_data ((const char *)FIRMWARE_USB3)
+#define firmware_usb3_size ((uint32_t)FIRMWARE_USB3_SIZE)
 
 fx3class *CreateUsbHandler()
 {
@@ -28,7 +32,35 @@ fx3handler::~fx3handler()
 
 bool fx3handler::Open()
 {
-    dev = usb_device_open(devidx, firmware_data, firmware_size);
+    enum usb_firmware_mode mode = USB_FIRMWARE_AUTO;
+    const char *request_name = "auto";
+
+    switch (firmware_mode) {
+    case Fx3FirmwareMode::Usb2:
+        mode = USB_FIRMWARE_USB2;
+        request_name = "usb2";
+        break;
+    case Fx3FirmwareMode::Usb3:
+        mode = USB_FIRMWARE_USB3;
+        request_name = "usb3";
+        break;
+    case Fx3FirmwareMode::Auto:
+    default:
+        mode = USB_FIRMWARE_AUTO;
+        request_name = "auto";
+        break;
+    }
+
+    fprintf(stderr, "FX3 firmware request: %s\n", request_name);
+
+    dev = usb_device_open(
+        devidx,
+        mode,
+        firmware_usb2_data,
+        firmware_usb2_size,
+        firmware_usb3_data,
+        firmware_usb3_size
+    );
     DbgPrintf("Open DevIdx=%d dev=%p\n", devidx, dev);
 
     // usb_device_open() returns NULL on busy / not-found / failed

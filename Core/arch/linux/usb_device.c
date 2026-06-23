@@ -231,8 +231,13 @@ int usb_device_free_device_list(struct usb_device_info *usb_device_infos)
 }
 
 
-usb_device_t *usb_device_open(int index, const char* image,
-                              uint32_t size)
+usb_device_t *usb_device_open(
+    int index,
+    enum usb_firmware_mode firmware_mode,
+    const char *usb2_image,
+    uint32_t usb2_size,
+    const char *usb3_image,
+    uint32_t usb3_size)
 {
   usb_device_t *ret_val = 0;
   libusb_context *ctx = 0;
@@ -253,7 +258,37 @@ usb_device_t *usb_device_open(int index, const char* image,
   }
 
   if (needs_firmware) {
-    ret = load_image(dev_handle, image, size);
+    /*
+     * Auto deliberately loads the USB3-capable image. The Cypress
+     * bootloader can enumerate at high-speed even on a SuperSpeed-capable
+     * connection, so its current speed is not a reliable selection signal.
+     * The USB3 image can negotiate SuperSpeed and can fall back to USB2.
+     */
+    const char *selected_image = usb3_image;
+    uint32_t selected_size = usb3_size;
+    const char *requested_name = "auto";
+    const char *selected_name = "usb3";
+
+    if (firmware_mode == USB_FIRMWARE_USB2) {
+      requested_name = "usb2";
+      selected_name = "usb2";
+      selected_image = usb2_image;
+      selected_size = usb2_size;
+    } else if (firmware_mode == USB_FIRMWARE_USB3) {
+      requested_name = "usb3";
+    }
+
+    fprintf(stderr,
+            "FX3 firmware selection: requested=%s loading=%s\n",
+            requested_name, selected_name);
+
+    if (selected_image == 0 || selected_size == 0) {
+      log_error("selected firmware image is empty",
+                __func__, __FILE__, __LINE__);
+      goto FAIL2;
+    }
+
+    ret = load_image(dev_handle, selected_image, selected_size);
     if (ret != 0) {
       log_error("load_image() failed", __func__, __FILE__, __LINE__);
       goto FAIL2;
@@ -286,6 +321,14 @@ usb_device_t *usb_device_open(int index, const char* image,
       log_error("device is still in boot loader mode", __func__, __FILE__, __LINE__);
       goto FAIL2;
     }
+  } else if (firmware_mode != USB_FIRMWARE_AUTO) {
+    const char *requested_name =
+        firmware_mode == USB_FIRMWARE_USB2 ? "usb2" : "usb3";
+
+    fprintf(stderr,
+            "WARNING - firmware=%s requested, but application firmware "
+            "is already running; power-cycle the RX888 to replace it\n",
+            requested_name);
   }
 
   int speed = libusb_get_device_speed(device);

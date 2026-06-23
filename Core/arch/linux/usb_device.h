@@ -43,8 +43,19 @@ int usb_device_get_device_list(struct usb_device_info **usb_device_infos);
 
 int usb_device_free_device_list(struct usb_device_info *usb_device_infos);
 
-usb_device_t *usb_device_open(int index, const char* image,
-                              uint32_t size);
+enum usb_firmware_mode {
+  USB_FIRMWARE_AUTO = 0,
+  USB_FIRMWARE_USB2,
+  USB_FIRMWARE_USB3
+};
+
+usb_device_t *usb_device_open(
+    int index,
+    enum usb_firmware_mode firmware_mode,
+    const char *usb2_image,
+    uint32_t usb2_size,
+    const char *usb3_image,
+    uint32_t usb3_size);
 
 int usb_device_handle_events(usb_device_t *t);
 

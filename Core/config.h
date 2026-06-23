@@ -75,6 +75,16 @@ enum rf_mode { NOMODE = 0, HFMODE = 0x1, VHFMODE = 0x2 };
 #define RX888_USB2_MAX_ADC_FREQ (18562500)
 #define RX888_USB2_DEFAULT_ADC_FREQ (14850000)
 #define RX888_USB2_MIN_ADC_FREQ (8100000)
+
+/*
+ * Canonical USB3 default: 126 MHz.
+ *
+ * Si5351 output is derived from an integer-N 27 MHz reference multiple,
+ * avoiding the fractional-N spurs produced by the historical 128 MHz
+ * default. The corresponding output rates are exact binary decimations.
+ */
+#define RX888_USB3_DEFAULT_ADC_FREQ (126000000)
+
 #define MW_HIGH ( 2000000)
 
 #define EXT_BLOCKLEN		512	* 64	/* 32768 only multiples of 512 */

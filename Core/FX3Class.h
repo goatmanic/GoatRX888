@@ -16,11 +16,19 @@
 #include "../Interface.h"
 #include "dsp/ringbuffer.h"
 
+enum class Fx3FirmwareMode
+{
+    Auto,
+    Usb2,
+    Usb3
+};
+
 class fx3class
 {
 public:
 	virtual ~fx3class(void) {}
 	virtual bool Open() = 0;
+    virtual void SetFirmwareMode(Fx3FirmwareMode mode) { (void)mode; }
 	virtual bool Control(FX3Command command, uint8_t data = 0) = 0;
 	virtual bool Control(FX3Command command, uint32_t data) = 0;
 	virtual bool Control(FX3Command command, uint64_t data) = 0;

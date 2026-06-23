@@ -29,6 +29,7 @@ public:
 	void StopStream() override;
 	bool Enumerate(unsigned char &idx, char *lbuf) override;
 	bool IsHighSpeed() override;
+    void SetFirmwareMode(Fx3FirmwareMode mode) override { firmware_mode = mode; }
 
 private:
 	bool ReadUsb(uint8_t command, uint16_t value, uint16_t index, uint8_t *data, size_t size);
@@ -45,6 +46,7 @@ private:
 	ringbuffer<int16_t> *inputbuffer;
     bool run;
     std::thread poll_thread;
+    Fx3FirmwareMode firmware_mode = Fx3FirmwareMode::Auto;
 };
 
 
