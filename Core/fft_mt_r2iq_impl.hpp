@@ -2,6 +2,7 @@
 {
 	const int decimate = this->mdecimation;
 	const int mfft = this->mfftdim[decimate];	// = halfFft / 2^mdecimation
+	const float ifftScale = this->ifftOutputScale[decimate];
 	const fftwf_complex* filter = filterHw[decimate];
 	const bool lsb = this->getSideband();
 	const auto filter2 = &filter[halfFft - mfft / 2];
@@ -136,22 +137,22 @@
 				// mirror just by negating the imaginary Q of complex I/Q
 				if (k == 0)
 				{
-					copy<true>(pout, &th->inFreqTmp[mfft / 4], mfft/2);
+					copy<true>(pout, &th->inFreqTmp[mfft / 4], mfft/2, ifftScale);
 				}
 				else
 				{
-					copy<true>(pout + mfft / 2 + (3 * mfft / 4) * (k - 1), &th->inFreqTmp[0], (3 * mfft / 4));
+					copy<true>(pout + mfft / 2 + (3 * mfft / 4) * (k - 1), &th->inFreqTmp[0], (3 * mfft / 4), ifftScale);
 				}
 			}
 			else // upper sideband
 			{
 				if (k == 0)
 				{
-					copy<false>(pout, &th->inFreqTmp[mfft / 4], mfft/2);
+					copy<false>(pout, &th->inFreqTmp[mfft / 4], mfft/2, ifftScale);
 				}
 				else
 				{
-					copy<false>(pout + mfft / 2 + (3 * mfft / 4) * (k - 1), &th->inFreqTmp[0], (3 * mfft / 4));
+					copy<false>(pout + mfft / 2 + (3 * mfft / 4) * (k - 1), &th->inFreqTmp[0], (3 * mfft / 4), ifftScale);
 				}
 			}
 			// result now in this->obuffers[]

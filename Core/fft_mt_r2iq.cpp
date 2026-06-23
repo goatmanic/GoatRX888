@@ -20,7 +20,10 @@ The name r2iq as Real 2 I+Q stream
 #include "fir.h"
 
 #include <assert.h>
+#include <algorithm>
+#include <cmath>
 #include <utility>
+#include <vector>
 
 
 r2iqControlClass::r2iqControlClass()
@@ -42,9 +45,11 @@ fft_mt_r2iq::fft_mt_r2iq() :
 {
 	mtunebin = halfFft / 4;
 	mfftdim[0] = halfFft;
+	ifftOutputScale[0] = 1.0f / static_cast<float>(mfftdim[0]);
 	for (int i = 1; i < NDECIDX; i++)
 	{
 		mfftdim[i] = mfftdim[i - 1] / 2;
+		ifftOutputScale[i] = 1.0f / static_cast<float>(mfftdim[i]);
 	}
 	GainScale = 0.0f;
 
@@ -169,33 +174,111 @@ void fft_mt_r2iq::Init(float gain, ringbuffer<int16_t> *input, ringbuffer<float>
 		}
 
 		filterplan_t2f_c2c = fftwf_plan_dft_1d(halfFft, pfilterht, filterHw[0], FFTW_FORWARD, FFTW_MEASURE);
-		float *pht = new float[halfFft / 4 + 1];
 		const float Astop = 120.0f;
-		const float relPass = 0.85f;  // 85% of Nyquist should be usable
-		const float relStop = 1.1f;   // 'some' alias back into transition band is OK
-		for (int d = 0; d < NDECIDX; d++)	// @todo when increasing NDECIDX
-		{
-			// @todo: have dynamic bandpass filter size - depending on decimation
-			//   to allow same stopband-attenuation for all decimations
-			float Bw = 64.0f / mratio[d];
-			// Bw *= 0.8f;  // easily visualize Kaiser filter's response
-			KaiserWindow(halfFft / 4 + 1, Astop, relPass * Bw / 128.0f, relStop * Bw / 128.0f, pht);
+		const float relPass = 0.85f;  // 85% of output Nyquist is usable
+		const float relStop = 1.1f;   // transition may extend slightly beyond Nyquist
 
-			float gainadj = gain * 2048.0f / (float)FFTN_R_ADC; // reference is FFTN_R_ADC == 2048
+		/*
+		 * The 8192-point forward FFT advances by 6144 samples, leaving 2048
+		 * samples of overlap. An overlap-save FIR may therefore use at most
+		 * overlap + 1 taps without circular aliasing.
+		 */
+		const int legacyFilterTaps = halfFft / 4 + 1;
+		const int maxFilterTaps = halfFft / 2 + 1;
+
+		for (int d = 0; d < NDECIDX; d++)
+		{
+			const float Bw = 64.0f / mratio[d];
+			const float normPass = relPass * Bw / 128.0f;
+			const float normStop = relStop * Bw / 128.0f;
+
+			int estimatedTaps =
+				KaiserWindow(0, Astop, normPass, normStop, nullptr);
+
+			/*
+			 * Preserve the established 1025-tap responses for x1..x16 and
+			 * grow only when a deeper decimation needs more rejection.
+			 */
+			int filterTaps = std::max(
+				legacyFilterTaps,
+				std::min(estimatedTaps, maxFilterTaps));
+
+			// Use an odd, symmetric FIR length.
+			if ((filterTaps & 1) == 0)
+			{
+				if (filterTaps < maxFilterTaps)
+					++filterTaps;
+				else
+					--filterTaps;
+			}
+
+			if (estimatedTaps > maxFilterTaps)
+			{
+				fprintf(stderr,
+					"r2iq: decimation x%d needs %d FIR taps for %.0f dB; "
+					"capped at overlap-safe %d taps\n",
+					mratio[d], estimatedTaps, Astop, filterTaps);
+			}
+
+			std::vector<float> pht(filterTaps);
+			KaiserWindow(filterTaps, Astop, normPass, normStop, pht.data());
+
+			/*
+			 * Normalize every rate-specific FIR to unity DC gain. Without this,
+			 * truncation and the changing transition width can move carrier and
+			 * noise levels slightly when the sample rate changes.
+			 */
+			double dcGain = 0.0;
+			for (float coefficient : pht)
+				dcGain += coefficient;
+			if (std::abs(dcGain) < 1.0e-12)
+			{
+				fprintf(stderr,
+					"r2iq: invalid FIR DC gain for decimation x%d\n",
+					mratio[d]);
+				dcGain = 1.0;
+			}
+
+			/*
+			 * FFTW_BACKWARD is unnormalized. Scale the time-domain output by
+			 * 1/mfftdim[d] in copy(), and compensate here by mfftdim[d].
+			 * The two factors cancel numerically, preserving the historical
+			 * calibrated CF32/dBFS level while making the IFFT normalization
+			 * explicit and independent of decimation depth.
+			 */
+			const float calibratedGain =
+				gain * 2048.0f / static_cast<float>(FFTN_R_ADC);
+			const float ifftCompensation = static_cast<float>(mfftdim[d]);
+			const float coefficientScale =
+				calibratedGain * ifftCompensation /
+				static_cast<float>(dcGain);
 
 			for (int t = 0; t < halfFft; t++)
 			{
-				pfilterht[t][0] = pfilterht[t][1]= 0.0F;
-			}
-		
-			for (int t = 0; t < (halfFft/4+1); t++)
-			{
-				pfilterht[halfFft-1-t][0] = gainadj * pht[t];
+				pfilterht[t][0] = pfilterht[t][1] = 0.0F;
 			}
 
-			fftwf_execute_dft(filterplan_t2f_c2c, pfilterht, filterHw[d]);
+			for (int t = 0; t < filterTaps; t++)
+			{
+				pfilterht[halfFft - 1 - t][0] =
+					coefficientScale * pht[t];
+			}
+
+			fftwf_execute_dft(
+				filterplan_t2f_c2c, pfilterht, filterHw[d]);
+
+			DbgPrintf(
+				"r2iq filter: decimation x%d, IFFT %d, taps %d/%d, "
+				"DC gain %.9g\n",
+				mratio[d], mfftdim[d], filterTaps, estimatedTaps, dcGain);
+			if (d >= 5)
+			{
+				fprintf(stderr,
+					"r2iq deep-decimation filter: x%d, IFFT %d, "
+					"FIR taps %d/%d\n",
+					mratio[d], mfftdim[d], filterTaps, estimatedTaps);
+			}
 		}
-		delete[] pht;
 		fftwf_destroy_plan(filterplan_t2f_c2c);
 		fftwf_free(pfilterht);
 

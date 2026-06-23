@@ -55,22 +55,23 @@ protected:
         }
     }
 
-    template<bool flip> void copy(fftwf_complex* dest, const fftwf_complex* source, int count)
+    template<bool flip> void copy(fftwf_complex* dest, const fftwf_complex* source,
+                                  int count, float scale)
     {
         if (flip)
         {
             for (int i = 0; i < count; i++)
             {
-                dest[i][0] = source[i][0];
-                dest[i][1] = -source[i][1];
+                dest[i][0] = source[i][0] * scale;
+                dest[i][1] = -source[i][1] * scale;
             }
         }
         else
         {
             for (int i = 0; i < count; i++)
             {
-                dest[i][0] = source[i][0];
-                dest[i][1] = source[i][1];
+                dest[i][0] = source[i][0] * scale;
+                dest[i][1] = source[i][1] * scale;
             }
         }
     }
@@ -83,6 +84,7 @@ private:
 
     float GainScale;
     int mfftdim [NDECIDX]; // FFT N dimensions: mfftdim[k] = halfFft / 2^k
+    float ifftOutputScale[NDECIDX]; // FFTW backward transform normalization, 1/N
     int mtunebin;
 
     void *r2iqThreadf(r2iqThreadArg *th);   // thread function

@@ -102,6 +102,30 @@ SoapySDDC::SoapySDDC(const SoapySDR::Kwargs &args) : deviceId(-1),
     DbgPrintf("SoapySDDC::SoapySDDC\n");
     unsigned char idx = 0;
     DevContext devicelist;
+
+    std::string firmware_arg = "auto";
+    Fx3FirmwareMode firmware_mode = Fx3FirmwareMode::Auto;
+
+    if (args.count("firmware")) {
+        firmware_arg = args.at("firmware");
+    }
+
+    if (firmware_arg == "auto") {
+        firmware_mode = Fx3FirmwareMode::Auto;
+    } else if (firmware_arg == "usb2") {
+        firmware_mode = Fx3FirmwareMode::Usb2;
+    } else if (firmware_arg == "usb3") {
+        firmware_mode = Fx3FirmwareMode::Usb3;
+    } else {
+        throw std::invalid_argument(
+            "firmware must be one of: auto, usb2, usb3");
+    }
+
+    Fx3->SetFirmwareMode(firmware_mode);
+    SoapySDR_logf(SOAPY_SDR_INFO,
+                  "FX3 firmware request: %s",
+                  firmware_arg.c_str());
+
     Fx3->Enumerate(idx, devicelist.dev[0]);
 
     // Open() can fail when the post-upload re-enumeration races: the device
@@ -134,7 +158,7 @@ SoapySDDC::SoapySDDC(const SoapySDR::Kwargs &args) : deviceId(-1),
     }
 
     if (supportsHighADCFrequency()) {
-        adcnominalfreq = 128000000;
+        adcnominalfreq = RX888_USB3_DEFAULT_ADC_FREQ;
         RadioHandler.UpdateSampleRate(adcnominalfreq);
     }
 
@@ -303,15 +327,8 @@ void SoapySDDC::setAntenna(const int direction, const size_t, const std::string 
             RadioHandler.PrepareLo(centerFrequency) == VHFMODE)
             centerFrequency = RadioHandler.TuneLO(centerFrequency);
 
-        if (_vhfAgcMode)
-        {
-            setVhfAgcUnlocked(true);   // re-arm AGC after init + tune
-        }
-        else
-        {
-            if (_vhfRfGainStep >= 0) RadioHandler.UpdateattRF(_vhfRfGainStep);
-            if (_vhfIfGainStep >= 0) RadioHandler.UpdateIFGain(_vhfIfGainStep);
-        }
+        /* Tuner init/tune may rewrite R828D gain registers. */
+        restoreVhfGainsUnlocked();
     }
     else
     {
@@ -1014,7 +1031,9 @@ SoapySDR::ArgInfoList SoapySDDC::getSettingInfo(void) const
     
     SoapySDR::ArgInfo AdcFreqArg;
     AdcFreqArg.key = "adc_frequency";
-    AdcFreqArg.value = highADCSupported ? "128000000" : "64000000";
+    AdcFreqArg.value = highADCSupported
+        ? std::to_string(RX888_USB3_DEFAULT_ADC_FREQ)
+        : "64000000";
     AdcFreqArg.name = "ADC Sample Rate";
 
     if (usb2Link)
@@ -1035,11 +1054,11 @@ SoapySDR::ArgInfoList SoapySDDC::getSettingInfo(void) const
     }
     else if (highADCSupported)
     {
-        AdcFreqArg.description = "ADC sample rate in Hz (50-140 MHz). Default 128 MHz. "
-                                 "Listed values are integer-N clean clocks (VCO = N x 27 MHz, "
-                                 "no fractional-N spurs); 126 and 130.5 MHz bracket the 128 MHz "
-                                 "default. Any value in range is accepted -- the list is advisory, "
-                                 "not a hard restriction. Above 80 MHz gives 6 rates up to ~64 MHz output.";
+        AdcFreqArg.description = "ADC sample rate in Hz (50-140 MHz). Default 126 MHz. "
+                                 "The default is an integer-N clean clock (VCO = N x 27 MHz, "
+                                 "no fractional-N spurs). Other listed values are also clean; "
+                                 "any value in range remains accepted. Above 80 MHz gives "
+                                 "6 rates up to half the ADC clock.";
         AdcFreqArg.range = SoapySDR::Range(MIN_ADC_FREQ, MAX_ADC_FREQ);
         char nm[40];
         for (uint32_t v : kUsb3CleanAdc) {
@@ -1095,16 +1114,20 @@ void SoapySDDC::writeSetting(const std::string &key, const std::string &value)
                 double r = computeSampleRateFromIndex(samplerateidx);
                 if (r > 0) sampleRate = r;
             }
-        } else if (supportsHighADCFrequency() && adcnominalfreq < 128000000) {
-            // Reverting to auto on a SuperSpeed link: restore the full-rate ADC.
-            adcnominalfreq = 128000000;
+        } else if (supportsHighADCFrequency() &&
+                   adcnominalfreq != RX888_USB3_DEFAULT_ADC_FREQ) {
+            // Restore the canonical integer-N USB3 ADC clock.
+            adcnominalfreq = RX888_USB3_DEFAULT_ADC_FREQ;
             RadioHandler.UpdateSampleRate(adcnominalfreq);
             double r = computeSampleRateFromIndex(samplerateidx);
             if (r > 0) sampleRate = r;
         }
         RadioHandler.ConfigureVhfBandwidth(sampleRate);
         if (RadioHandler.GetmodeRF() == VHFMODE && centerFrequency != 0)
+        {
             centerFrequency = RadioHandler.TuneLO(centerFrequency);
+            restoreVhfGainsUnlocked();
+        }
         SoapySDR_logf(SOAPY_SDR_INFO, "USB 2.0 mode set to %s (ADC %u Hz)",
                       _usb2Forced ? "force" : "auto", adcnominalfreq);
     }
@@ -1169,7 +1192,10 @@ void SoapySDDC::writeSetting(const std::string &key, const std::string &value)
 
             RadioHandler.ConfigureVhfBandwidth(sampleRate);
             if (RadioHandler.GetmodeRF() == VHFMODE && centerFrequency != 0)
+            {
                 centerFrequency = RadioHandler.TuneLO(centerFrequency);
+                restoreVhfGainsUnlocked();
+            }
             
         } catch (const std::invalid_argument& e) {
             SoapySDR_logf(SOAPY_SDR_ERROR, 
