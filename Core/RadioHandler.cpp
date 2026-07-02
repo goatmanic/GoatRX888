@@ -10,8 +10,11 @@
 #include "config.h"
 #include "PScope_uti.h"
 #include "../Interface.h"
+#include "fir.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 using namespace std::chrono;
 
@@ -19,41 +22,153 @@ using namespace std::chrono;
 
 unsigned long Failures = 0;
 
+HalfbandDecimator2::HalfbandDecimator2() :
+    writePosition(0),
+    phase(false)
+{
+    /*
+     * Frequencies are normalized to the input complex sample rate.
+     * After decimation by two, the new Nyquist frequency is 0.25.
+     * The symmetric 0.2125/0.2875 transition preserves 85% of the
+     * destination Nyquist bandwidth.
+     */
+    KaiserWindow(TAP_COUNT, 100.0f, 0.2125f, 0.2875f,
+                 coefficients.data());
+
+    /*
+     * The cutoff is exactly 0.25, so every other coefficient except the
+     * center is mathematically zero. Force those values to zero and exploit
+     * both the half-band zeros and FIR symmetry in process().
+     */
+    for (int tap = 1; tap < TAP_COUNT; tap += 2)
+    {
+        if (tap != CENTER_TAP)
+            coefficients[tap] = 0.0f;
+    }
+
+    double dcGain = 0.0;
+    for (float coefficient : coefficients)
+        dcGain += coefficient;
+
+    if (std::abs(dcGain) < 1.0e-12)
+        dcGain = 1.0;
+
+    for (float &coefficient : coefficients)
+        coefficient /= static_cast<float>(dcGain);
+
+    reset();
+}
+
+void HalfbandDecimator2::reset()
+{
+    delayI.fill(0.0f);
+    delayQ.fill(0.0f);
+    writePosition = 0;
+    phase = false;
+}
+
+void HalfbandDecimator2::process(const float *input, uint32_t length,
+                                 std::vector<float> &output)
+{
+    output.clear();
+
+    /*
+     * length is a complex-sample count. A by-two stage therefore emits
+     * approximately length floats (two floats for each output sample).
+     */
+    output.reserve(length);
+
+    for (uint32_t sample = 0; sample < length; ++sample)
+    {
+        const int newest = writePosition;
+        delayI[newest] = input[2 * sample];
+        delayQ[newest] = input[2 * sample + 1];
+
+        if (++writePosition == TAP_COUNT)
+            writePosition = 0;
+
+        phase = !phase;
+        if (phase)
+            continue;
+
+        auto delayedIndex = [newest](int delay) {
+            int index = newest - delay;
+            if (index < 0)
+                index += TAP_COUNT;
+            return index;
+        };
+
+        const int centerIndex = delayedIndex(CENTER_TAP);
+        float accI = coefficients[CENTER_TAP] * delayI[centerIndex];
+        float accQ = coefficients[CENTER_TAP] * delayQ[centerIndex];
+
+        /*
+         * Non-center half-band coefficients are present only at even taps.
+         * Pair symmetric samples before multiplying, reducing this 95-tap
+         * filter to 24 pair multiplies plus the center multiply per output.
+         */
+        for (int tap = 0; tap < CENTER_TAP; tap += 2)
+        {
+            const int left = delayedIndex(tap);
+            const int right = delayedIndex(TAP_COUNT - 1 - tap);
+            const float coefficient = coefficients[tap];
+
+            accI += coefficient * (delayI[left] + delayI[right]);
+            accQ += coefficient * (delayQ[left] + delayQ[right]);
+        }
+
+        output.push_back(accI);
+        output.push_back(accQ);
+    }
+}
+
 void RadioHandlerClass::OnDataPacket()
 {
-	auto len = outputbuffer.getBlockSize() / 2 / sizeof(float);
+    auto len = outputbuffer.getBlockSize() / 2 / sizeof(float);
 
-	while(run)
-	{
-		auto buf = outputbuffer.getReadPtr();
+    while(run)
+    {
+        auto buf = outputbuffer.getReadPtr();
+        if (!run)
+            break;
 
-		if (!run)
-			break;
+        if (fc != 0.0f)
+        {
+            std::unique_lock<std::mutex> lk(fc_mutex);
+            shift_limited_unroll_C_sse_inp_c((complexf*)buf, len, stateFineTune);
+        }
 
-		if (fc != 0.0f)
-		{
-			std::unique_lock<std::mutex> lk(fc_mutex);
-			shift_limited_unroll_C_sse_inp_c((complexf*)buf, len, stateFineTune);
-		}
-
-#ifdef _DEBUG		//PScope buffer screenshot
-		if (saveADCsamplesflag == true)
-		{
-			saveADCsamplesflag = false; // do it once
-			unsigned int numsamples = transferSize / sizeof(int16_t);
-			float samplerate  = (float) getSampleRate();
-			PScopeShot("ADCrealsamples.adc", "ExtIO_sddc.dll",
-				"ADCrealsamples.adc input real ADC 16 bit samples",
-				(short*)buf, samplerate, numsamples);
-		}
+#ifdef _DEBUG      //PScope buffer screenshot
+        if (saveADCsamplesflag == true)
+        {
+            saveADCsamplesflag = false; // do it once
+            unsigned int numsamples = transferSize / sizeof(int16_t);
+            float samplerate  = (float) getSampleRate();
+            PScopeShot("ADCrealsamples.adc", "ExtIO_sddc.dll",
+                "ADCrealsamples.adc input real ADC 16 bit samples",
+                (short*)buf, samplerate, numsamples);
+        }
 #endif
 
-		Callback(callbackContext, buf, len);
+        const float *callbackData = buf;
+        uint32_t callbackLength = static_cast<uint32_t>(len);
 
-		outputbuffer.ReadDone();
+        for (int stage = 0; stage < postDecimationStages; ++stage)
+        {
+            postDecimators[stage].process(
+                callbackData, callbackLength, postDecimationBuffers[stage]);
 
-		SamplesXIF += len;
-	}
+            callbackData = postDecimationBuffers[stage].data();
+            callbackLength = static_cast<uint32_t>(
+                postDecimationBuffers[stage].size() / 2);
+        }
+
+        Callback(callbackContext, callbackData, callbackLength);
+
+        outputbuffer.ReadDone();
+
+        SamplesXIF += callbackLength;
+    }
 }
 
 RadioHandlerClass::RadioHandlerClass() :
@@ -69,6 +184,7 @@ RadioHandlerClass::RadioHandlerClass() :
 	modeRF(NOMODE),
 	adcrate(DEFAULT_ADC_FREQ),
 	fc(0.0f),
+	postDecimationStages(0),
 	hardware(new DummyRadio(nullptr))
 {
 	stateFineTune = new shift_limited_unroll_C_sse_data_t();
@@ -84,7 +200,7 @@ const char *RadioHandlerClass::getName() const
 	return hardware->getName();
 }
 
-bool RadioHandlerClass::Init(fx3class* Fx3, void (*callback)(void*context, const float*, uint32_t), r2iqControlClass *r2iqCntrl, void *context)
+bool RadioHandlerClass::Init(fx3class* Fx3, void (*callback)(void*context, const float*, uint32_t), r2iqControlClass *r2iqCntrl, void *context, bool forceUsb2Clock)
 {
 	uint8_t rdata[4];
 	this->fx3 = Fx3;
@@ -135,6 +251,18 @@ bool RadioHandlerClass::Init(fx3class* Fx3, void (*callback)(void*context, const
 		DbgPrintf("WARNING no SDR connected\n");
 		break;
 	}
+	/*
+	 * Si5351init() leaves CLK0 disabled. Select an integer-N RX888 clock
+	 * before the first hardware Initialize() call so the ADC is never driven
+	 * from the historical arbitrary 64/128 MHz setup during startup.
+	 */
+	if (radio == RX888 || radio == RX888r2 || radio == RX888r3 || radio == RX999)
+	{
+		adcnominalfreq = (forceUsb2Clock || Fx3->IsHighSpeed())
+			? RX888_USB2_DEFAULT_ADC_FREQ
+			: RX888_USB3_DEFAULT_ADC_FREQ;
+	}
+
 	adcrate = adcnominalfreq;
 	hardware->Initialize(adcnominalfreq);
 	DbgPrintf("%s | firmware %x\n", hardware->getName(), firmware);
@@ -144,41 +272,67 @@ bool RadioHandlerClass::Init(fx3class* Fx3, void (*callback)(void*context, const
 	return true;
 }
 
-bool RadioHandlerClass::Start(int srate_idx)
+bool RadioHandlerClass::Start(int srate_idx, int post_decimation_stages)
 {
-	Stop();
-	DbgPrintf("RadioHandlerClass::Start\n");
+    Stop();
+    DbgPrintf("RadioHandlerClass::Start\n");
 
-	int	decimate = 4 - srate_idx;   // 5 IF bands
-	if (adcnominalfreq > N2_BANDSWITCH) 
-		decimate = 5 - srate_idx;   // 6 IF bands
-	if (decimate < 0)
-	{
-		decimate = 0;
-		DbgPrintf("WARNING decimate mismatch at srate_idx = %d\n", srate_idx);
-	}
-	run = true;
-	count = 0;
+    int decimate = 4 - srate_idx;   // 5 core FFT bands
+    if (adcnominalfreq > N2_BANDSWITCH)
+        decimate = 5 - srate_idx;   // 6 core FFT bands
+    if (decimate < 0)
+    {
+        decimate = 0;
+        DbgPrintf("WARNING decimate mismatch at srate_idx = %d\n", srate_idx);
+    }
 
-	hardware->FX3producerOn();  // FX3 start the producer
+    postDecimationStages = std::max(
+        0, std::min(post_decimation_stages, MAX_POST_DECIMATION_STAGES));
+    if (postDecimationStages != post_decimation_stages)
+    {
+        fprintf(stderr,
+            "RadioHandler: post-decimation request %d exceeds supported range "
+            "0..%d; using %d\n",
+            post_decimation_stages, MAX_POST_DECIMATION_STAGES,
+            postDecimationStages);
+    }
 
-	outputbuffer.setBlockSize(EXT_BLOCKLEN * 2 * sizeof(float));
+    size_t stageComplexLength = EXT_BLOCKLEN;
+    for (int stage = 0; stage < MAX_POST_DECIMATION_STAGES; ++stage)
+    {
+        postDecimators[stage].reset();
+        postDecimationBuffers[stage].clear();
+        stageComplexLength = (stageComplexLength + 1) / 2;
+        postDecimationBuffers[stage].reserve(stageComplexLength * 2);
+    }
 
-	// 0,1,2,3,4 => 32,16,8,4,2 MHz
-	r2iqCntrl->setDecimate(decimate);
-	r2iqCntrl->TurnOn();
-	fx3->StartStream(inputbuffer, QUEUE_SIZE);
+    run = true;
+    count = 0;
 
-	submit_thread = std::thread(
-		[this]() {
-			this->OnDataPacket();
-		});
+    hardware->FX3producerOn();  // FX3 start the producer
 
-	show_stats_thread = std::thread([this](void*) {
-		this->CaculateStats();
-	}, nullptr);
+    outputbuffer.setBlockSize(EXT_BLOCKLEN * 2 * sizeof(float));
 
-	return true;
+    r2iqCntrl->setDecimate(decimate);
+    r2iqCntrl->TurnOn();
+    fx3->StartStream(inputbuffer, QUEUE_SIZE);
+
+    submit_thread = std::thread(
+        [this]() {
+            this->OnDataPacket();
+        });
+
+    show_stats_thread = std::thread([this](void*) {
+        this->CaculateStats();
+    }, nullptr);
+
+    DbgPrintf(
+        "RadioHandlerClass::Start core decimation x%d, post stages %d, "
+        "total decimation x%d\n",
+        1 << decimate, postDecimationStages,
+        (1 << decimate) * (1 << postDecimationStages));
+
+    return true;
 }
 
 bool RadioHandlerClass::Stop()
@@ -227,6 +381,31 @@ bool RadioHandlerClass::UpdateSampleRate(uint32_t samplefreq)
 bool RadioHandlerClass::ConfigureVhfBandwidth(double outputRate)
 {
 	return hardware->ConfigureVhfBandwidth(outputRate, adcrate);
+}
+
+
+bool RadioHandlerClass::ConfigureCoreDecimation(int decimation)
+{
+    if (r2iqCntrl == nullptr)
+        return false;
+
+    const int selected = std::max(0, std::min(decimation, NDECIDX - 1));
+    if (selected != decimation)
+    {
+        DbgPrintf(
+            "ConfigureCoreDecimation: requested %d, clamped to %d\n",
+            decimation, selected);
+    }
+
+    /*
+     * TuneLO()->setFreqOffset() uses getRatio() to scale the residual
+     * fine-tune mixer. Applications normally tune before activateStream(), so
+     * the selected ratio must be installed before TuneLO(), not only later in
+     * Start().
+     */
+    std::unique_lock<std::mutex> lock(fc_mutex);
+    r2iqCntrl->setDecimate(selected);
+    return selected == decimation;
 }
 
 // attenuator RF used in HF
@@ -331,6 +510,8 @@ uint64_t RadioHandlerClass::TuneLO(uint64_t wishedFreq)
 	int64_t offset = wishedFreq - actLo;
 	DbgPrintf("Offset freq %" PRIi64 "\n", offset);
 	float fc = r2iqCntrl->setFreqOffset(offset / (getSampleRate() / 2.0f));
+	DbgPrintf("Fine tune offset %" PRIi64 " Hz, core ratio x%d, residual %f\n",
+	              offset, r2iqCntrl->getRatio(), fc);
 	if (GetmodeRF() == VHFMODE)
 		fc = -fc;   // sign change with sideband used
 	if (this->fc != fc)

@@ -17,7 +17,7 @@ SoapySDR::KwargsList findSDDC(const SoapySDR::Kwargs &args)
     {
         SoapySDR::Kwargs devInfo;
 
-        devInfo["label"] = std::string("SDDC") + " :: " + devicelist.dev[idx];
+        devInfo["label"] = std::string("GoatRX888 by Kyle Chapman") + " :: " + devicelist.dev[idx];
         results.push_back(devInfo);
         idx++;
     }

@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdint.h>
+#include <array>
+#include <vector>
 #include "FX3Class.h"
 
 #include "dsp/ringbuffer.h"
@@ -26,12 +28,36 @@ enum {
 struct shift_limited_unroll_C_sse_data_s;
 typedef struct shift_limited_unroll_C_sse_data_s shift_limited_unroll_C_sse_data_t;
 
+/*
+ * One complex-by-2 decimation stage. The 95-tap half-band response preserves
+ * roughly 85% of the new Nyquist bandwidth and provides about 100 dB of
+ * rejection before every downsampling step. State is retained across USB
+ * callback blocks.
+ */
+class HalfbandDecimator2 {
+public:
+    HalfbandDecimator2();
+    void reset();
+    void process(const float *input, uint32_t length,
+                 std::vector<float> &output);
+
+private:
+    static constexpr int TAP_COUNT = 95;
+    static constexpr int CENTER_TAP = TAP_COUNT / 2;
+
+    std::array<float, TAP_COUNT> coefficients;
+    std::array<float, TAP_COUNT> delayI;
+    std::array<float, TAP_COUNT> delayQ;
+    int writePosition;
+    bool phase;
+};
+
 class RadioHandlerClass {
 public:
     RadioHandlerClass();
     virtual ~RadioHandlerClass();
-    bool Init(fx3class* Fx3, void (*callback)(void* context, const float*, uint32_t), r2iqControlClass *r2iqCntrl = nullptr, void* context = nullptr);
-    bool Start(int srate_idx);
+    bool Init(fx3class* Fx3, void (*callback)(void* context, const float*, uint32_t), r2iqControlClass *r2iqCntrl = nullptr, void* context = nullptr, bool forceUsb2Clock = false);
+    bool Start(int srate_idx, int post_decimation_stages = 0);
     bool Stop();
     bool Close();
     bool IsReady(){return true;}
@@ -63,6 +89,7 @@ public:
     uint32_t getSampleRate() { return adcrate; }
     bool UpdateSampleRate(uint32_t samplerate);
     bool ConfigureVhfBandwidth(double outputRate);
+    bool ConfigureCoreDecimation(int decimation);
 
     float getBps() const { return mBps; }
     float getSpsIF() const {return mSpsIF; }
@@ -132,6 +159,12 @@ private:
     std::mutex fc_mutex;
     std::mutex stop_mutex;
     float fc;
+
+    static constexpr int MAX_POST_DECIMATION_STAGES = 6;
+    int postDecimationStages;
+    std::array<HalfbandDecimator2, MAX_POST_DECIMATION_STAGES> postDecimators;
+    std::array<std::vector<float>, MAX_POST_DECIMATION_STAGES> postDecimationBuffers;
+
     RadioHardware* hardware;
     shift_limited_unroll_C_sse_data_t* stateFineTune;
 };

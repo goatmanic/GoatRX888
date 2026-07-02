@@ -153,9 +153,15 @@ private:
     bool usb2Active() const;   // _usb2Forced || link negotiated high-speed
     
     // Compute expected sample rate for given index based on current ADC frequency
+    int sampleRateCount() const;
+    int maxCoreDecimation() const;
+    int totalDecimationFromIndex(int idx) const;
+    void prepareRadioAtSelectedRate();
+    void startRadioAtSelectedRate();
+
     double computeSampleRateFromIndex(int idx) const;
     
-    // Find best sample rate index for requested rate, returns -1 if invalid
+    // Find exact sample-rate index for requested rate, returns -1 if invalid
     int findSampleRateIndex(double rate) const;
 
     void restoreVhfGainsUnlocked();

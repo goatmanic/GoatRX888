@@ -109,7 +109,7 @@ int SoapySDDC::activateStream(SoapySDR::Stream *stream,
 
     if (!_streamActive.exchange(true))
     {
-        RadioHandler.Start(samplerateidx);
+        startRadioAtSelectedRate();
     }
 
     return 0;
